@@ -20,14 +20,13 @@ _swift_complete()
     # Don't know how to get the help for llvm options automatically.
     # So we use a grep'ed static list.
     COMPREPLY=( $(compgen -W "\
-      -disable-llvm-arc-opts \
+      -disable-swift-specific-llvm-optzns \
       -stack-promotion-limit \
       -view-cfg-max-columns \
       -view-cfg-long-line-behavior \
       -view-cfg-remove-use-list-comments \
       -view-cfg-only-for-function \
       -sil-print-no-color \
-      -verify-skip-unreachable-must-be-last \
       -aa \
       -cache-aa-results \
       -sil-dump-call-graph \
@@ -68,6 +67,7 @@ _swift_complete()
       -sil-verify-without-invalidation \
       -sil-inline-test-threshold \
       -sil-inline-test \
+      -sil-inline-never-functions \
       -sroa-args-remove-dead-args-after \
       -ml \
       -sil-print-escapes \

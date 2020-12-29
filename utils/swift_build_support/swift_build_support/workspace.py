@@ -29,6 +29,15 @@ class Workspace(object):
         return os.path.join(self.build_root,
                             '%s-%s' % (product, deployment_target))
 
+    def swiftpm_unified_build_dir(self, deployment_target):
+        """ swiftpm_unified_build_dir() -> str
+
+        Build directory that all SwiftPM unified build products share.
+        """
+        return os.path.join(self.build_root,
+                            'unified-swiftpm-build-%s' %
+                            deployment_target)
+
 
 def compute_build_subdir(args):
     # Create a name for the build directory.
@@ -55,25 +64,25 @@ def compute_build_subdir(args):
     # FIXME: mangle LLDB build configuration into the directory name.
     if (llvm_build_dir_label == swift_build_dir_label and
             llvm_build_dir_label == swift_stdlib_build_dir_label and
-            llvm_build_dir_label == cmark_build_dir_label):
+            swift_build_dir_label == cmark_build_dir_label):
         # Use a simple directory name if all projects use the same build
         # type.
         build_subdir += "-" + llvm_build_dir_label
     elif (llvm_build_dir_label != swift_build_dir_label and
             llvm_build_dir_label == swift_stdlib_build_dir_label and
-            llvm_build_dir_label == cmark_build_dir_label):
+            swift_build_dir_label == cmark_build_dir_label):
         # Swift build type differs.
         build_subdir += "-" + llvm_build_dir_label
         build_subdir += "+swift-" + swift_build_dir_label
     elif (llvm_build_dir_label == swift_build_dir_label and
             llvm_build_dir_label != swift_stdlib_build_dir_label and
-            llvm_build_dir_label == cmark_build_dir_label):
+            swift_build_dir_label == cmark_build_dir_label):
         # Swift stdlib build type differs.
         build_subdir += "-" + llvm_build_dir_label
         build_subdir += "+stdlib-" + swift_stdlib_build_dir_label
     elif (llvm_build_dir_label == swift_build_dir_label and
             llvm_build_dir_label == swift_stdlib_build_dir_label and
-            llvm_build_dir_label != cmark_build_dir_label):
+            swift_build_dir_label != cmark_build_dir_label):
         # cmark build type differs.
         build_subdir += "-" + llvm_build_dir_label
         build_subdir += "+cmark-" + cmark_build_dir_label
@@ -85,4 +94,11 @@ def compute_build_subdir(args):
         build_subdir += "+swift-" + swift_build_dir_label
         build_subdir += "+stdlib-" + swift_stdlib_build_dir_label
 
+    # If we have a sanitizer enabled, mangle it into the subdir.
+    if args.enable_asan:
+        build_subdir += "+asan"
+    if args.enable_ubsan:
+        build_subdir += "+ubsan"
+    if args.enable_tsan:
+        build_subdir += "+tsan"
     return build_subdir

@@ -13,72 +13,18 @@
 #ifndef SWIFT_SILOPTIMIZER_UTILS_SPECIALIZATIONMANGLER_H
 #define SWIFT_SILOPTIMIZER_UTILS_SPECIALIZATIONMANGLER_H
 
-#include "swift/Basic/Demangler.h"
+#include "swift/SIL/GenericSpecializationMangler.h"
+
+#include "swift/Demangling/Demangler.h"
+#include "swift/Demangling/NamespaceMacros.h"
 #include "swift/Basic/NullablePtr.h"
 #include "swift/AST/ASTMangler.h"
 #include "swift/SIL/SILLinkage.h"
 #include "swift/SIL/SILFunction.h"
 
 namespace swift {
-namespace NewMangling {
-
-enum class SpecializationKind : uint8_t {
-  Generic,
-  NotReAbstractedGeneric,
-  FunctionSignature,
-};
-  
-/// Inject SpecializationPass into the Mangle namespace.
-using SpecializationPass = Demangle::SpecializationPass;
-
-/// The base class for specialization mangles.
-class SpecializationMangler : public NewMangling::ASTMangler {
-protected:
-  /// The specialization pass.
-  SpecializationPass Pass;
-
-  IsFragile_t Fragile;
-
-  /// The original function which is specialized.
-  SILFunction *Function;
-
-  llvm::SmallVector<char, 32> ArgOpStorage;
-  llvm::raw_svector_ostream ArgOpBuffer;
-
-protected:
-  SpecializationMangler(SpecializationPass P, IsFragile_t Fragile,
-                        SILFunction *F)
-      : Pass(P), Fragile(Fragile), Function(F), ArgOpBuffer(ArgOpStorage) {}
-
-  SILFunction *getFunction() const { return Function; }
-
-  void beginMangling();
-
-  /// Finish the mangling of the symbol and return the mangled name.
-  std::string finalize();
-
-  void appendSpecializationOperator(StringRef Op) {
-    appendOperator(Op, StringRef(ArgOpStorage.data(), ArgOpStorage.size()));
-  }
-};
-
-// The mangler for specialized generic functions.
-class GenericSpecializationMangler : public SpecializationMangler {
-
-  ArrayRef<Substitution> Subs;
-  bool isReAbstracted;
-
-public:
-
-  GenericSpecializationMangler(SILFunction *F,
-                               ArrayRef<Substitution> Subs,
-                               IsFragile_t Fragile,
-                               bool isReAbstracted)
-    : SpecializationMangler(SpecializationPass::GenericSpecializer, Fragile, F),
-      Subs(Subs), isReAbstracted(isReAbstracted) {}
-
-  std::string mangle();
-};
+namespace Mangle {
+SWIFT_BEGIN_INLINE_NAMESPACE
 
 class PartialSpecializationMangler : public SpecializationMangler {
 
@@ -88,10 +34,10 @@ class PartialSpecializationMangler : public SpecializationMangler {
 public:
   PartialSpecializationMangler(SILFunction *F,
                                CanSILFunctionType SpecializedFnTy,
-                               IsFragile_t Fragile,
-                               bool isReAbstracted)
-    : SpecializationMangler(SpecializationPass::GenericSpecializer, Fragile, F),
-      SpecializedFnTy(SpecializedFnTy), isReAbstracted(isReAbstracted) {}
+                               IsSerialized_t Serialized, bool isReAbstracted)
+      : SpecializationMangler(SpecializationPass::GenericSpecializer,
+                              Serialized, F),
+        SpecializedFnTy(SpecializedFnTy), isReAbstracted(isReAbstracted) {}
 
   std::string mangle();
 };
@@ -127,30 +73,38 @@ class FunctionSignatureSpecializationMangler : public SpecializationMangler {
     Dead=32,
     OwnedToGuaranteed=64,
     SROA=128,
+    GuaranteedToOwned=256,
+    ExistentialToGeneric=512,
     First_OptionSetEntry=32, LastOptionSetEntry=32768,
   };
 
   using ArgInfo = std::pair<ArgumentModifierIntBase,
                             NullablePtr<SILInstruction>>;
-  llvm::SmallVector<ArgInfo, 8> Args;
+  // Information for each SIL argument in the original function before
+  // specialization. This includes SIL indirect result argument required for
+  // the original function type at the current stage of compilation.
+  llvm::SmallVector<ArgInfo, 8> OrigArgs;
 
   ReturnValueModifierIntBase ReturnValue;
 
 public:
   FunctionSignatureSpecializationMangler(SpecializationPass Pass,
-                                         IsFragile_t Fragile,
+                                         IsSerialized_t Serialized,
                                          SILFunction *F);
-  void setArgumentConstantProp(unsigned ArgNo, LiteralInst *LI);
-  void setArgumentClosureProp(unsigned ArgNo, PartialApplyInst *PAI);
-  void setArgumentClosureProp(unsigned ArgNo, ThinToThickFunctionInst *TTTFI);
-  void setArgumentDead(unsigned ArgNo);
-  void setArgumentOwnedToGuaranteed(unsigned ArgNo);
-  void setArgumentSROA(unsigned ArgNo);
-  void setArgumentBoxToValue(unsigned ArgNo);
-  void setArgumentBoxToStack(unsigned ArgNo);
+  void setArgumentConstantProp(unsigned OrigArgIdx, LiteralInst *LI);
+  void setArgumentClosureProp(unsigned OrigArgIdx, PartialApplyInst *PAI);
+  void setArgumentClosureProp(unsigned OrigArgIdx,
+                              ThinToThickFunctionInst *TTTFI);
+  void setArgumentDead(unsigned OrigArgIdx);
+  void setArgumentOwnedToGuaranteed(unsigned OrigArgIdx);
+  void setArgumentGuaranteedToOwned(unsigned OrigArgIdx);
+  void setArgumentExistentialToGeneric(unsigned OrigArgIdx);
+  void setArgumentSROA(unsigned OrigArgIdx);
+  void setArgumentBoxToValue(unsigned OrigArgIdx);
+  void setArgumentBoxToStack(unsigned OrigArgIdx);
   void setReturnValueOwnedToUnowned();
 
-  std::string mangle(int UniqueID = 0);
+  std::string mangle();
   
 private:
   void mangleConstantProp(LiteralInst *LI);
@@ -160,7 +114,8 @@ private:
   void mangleReturnValue(ReturnValueModifierIntBase RetMod);
 };
 
-} // end namespace NewMangling
+SWIFT_END_INLINE_NAMESPACE
+} // end namespace Mangle
 } // end namespace swift
 
 #endif

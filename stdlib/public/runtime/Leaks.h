@@ -23,30 +23,38 @@
 
 #include "../SwiftShims/Visibility.h"
 
+#include "swift/Runtime/Config.h"
+
 namespace swift {
 struct HeapObject;
 }
 
-SWIFT_RUNTIME_EXPORT
-extern "C" void swift_leaks_startTrackingObjects(const char *)
-    __attribute__((__noinline__, __used__));
-SWIFT_RUNTIME_EXPORT
-extern "C" int swift_leaks_stopTrackingObjects(const char *)
-    __attribute__((__noinline__, __used__));
-SWIFT_RUNTIME_EXPORT
-extern "C" void swift_leaks_startTrackingObject(swift::HeapObject *)
-    __attribute__((__noinline__, __used__));
-SWIFT_RUNTIME_EXPORT
-extern "C" void swift_leaks_stopTrackingObject(swift::HeapObject *)
-    __attribute__((__noinline__, __used__));
+SWIFT_CC(swift)
+SWIFT_RUNTIME_EXPORT SWIFT_NOINLINE SWIFT_USED void
+_swift_leaks_startTrackingObjects(const char *);
+
+SWIFT_CC(swift)
+SWIFT_RUNTIME_EXPORT SWIFT_NOINLINE SWIFT_USED int
+_swift_leaks_stopTrackingObjects(const char *);
+
+SWIFT_RUNTIME_EXPORT SWIFT_NOINLINE SWIFT_USED void
+_swift_leaks_startTrackingObject(swift::HeapObject *);
+
+SWIFT_RUNTIME_EXPORT SWIFT_NOINLINE SWIFT_USED void
+_swift_leaks_stopTrackingObject(swift::HeapObject *);
 
 #define SWIFT_LEAKS_START_TRACKING_OBJECT(obj)                                 \
-  swift_leaks_startTrackingObject(obj)
+  _swift_leaks_startTrackingObject(obj)
 #define SWIFT_LEAKS_STOP_TRACKING_OBJECT(obj)                                  \
-  swift_leaks_stopTrackingObject(obj)
+  _swift_leaks_stopTrackingObject(obj)
+
+// SWIFT_RUNTIME_ENABLE_LEAK_CHECKER
 #else
+// not SWIFT_RUNTIME_ENABLE_LEAK_CHECKER
+
 #define SWIFT_LEAKS_START_TRACKING_OBJECT(obj)
 #define SWIFT_LEAKS_STOP_TRACKING_OBJECT(obj)
+
 #endif
 
 #endif

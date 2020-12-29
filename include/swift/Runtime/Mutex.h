@@ -20,20 +20,93 @@
 
 #include <type_traits>
 
-#if (defined(__APPLE__) || defined(__linux__) || defined(__CYGWIN__) || defined(__FreeBSD__))
+#if __has_include(<unistd.h>)
+#include <unistd.h>
+#endif
+
+#ifdef SWIFT_STDLIB_SINGLE_THREADED_RUNTIME
+#include "swift/Runtime/MutexSingleThreaded.h"
+#elif defined(_POSIX_THREADS)
 #include "swift/Runtime/MutexPThread.h"
 #elif defined(_WIN32)
 #include "swift/Runtime/MutexWin32.h"
+#elif defined(__wasi__)
+#include "swift/Runtime/MutexSingleThreaded.h"
 #else
 #error "Implement equivalent of MutexPThread.h/cpp for your platform."
 #endif
 
 namespace swift {
 
+/// A stack based object that notifies one thread waiting on a condition
+/// variable on destruction.
+template <typename ConditionVariable>
+class ScopedNotifyOneT {
+  ScopedNotifyOneT() = delete;
+  ScopedNotifyOneT(const ScopedNotifyOneT &) = delete;
+  ScopedNotifyOneT &operator=(const ScopedNotifyOneT &) = delete;
+
+  ConditionVariable &Condition;
+public:
+  explicit ScopedNotifyOneT(ConditionVariable &c) : Condition(c) {}
+
+  ~ScopedNotifyOneT() {
+    Condition.notifyOne();
+  }
+};
+
+/// A stack based object that notifies all threads waiting on a condition
+/// variable on destruction.
+template <typename ConditionVariable>
+class ScopedNotifyAllT {
+  ScopedNotifyAllT() = delete;
+  ScopedNotifyAllT(const ScopedNotifyAllT &) = delete;
+  ScopedNotifyAllT &operator=(const ScopedNotifyAllT &) = delete;
+
+  ConditionVariable &Condition;
+public:
+  explicit ScopedNotifyAllT(ConditionVariable &c) : Condition(c) {}
+
+  ~ScopedNotifyAllT() {
+    Condition.notifyAll();
+  }
+};
+
+/// Compile time adjusted stack based object that locks/unlocks the supplied
+/// Mutex type. Use the provided typedefs instead of this directly.
+template <typename T, bool Inverted> class ScopedLockT {
+  ScopedLockT() = delete;
+  ScopedLockT(const ScopedLockT &) = delete;
+  ScopedLockT &operator=(const ScopedLockT &) = delete;
+  ScopedLockT(ScopedLockT &&) = delete;
+  ScopedLockT &operator=(ScopedLockT &&) = delete;
+
+public:
+  explicit ScopedLockT(T &l) : Lock(l) {
+    if (Inverted) {
+      Lock.unlock();
+    } else {
+      Lock.lock();
+    }
+  }
+
+  ~ScopedLockT() {
+    if (Inverted) {
+      Lock.lock();
+    } else {
+      Lock.unlock();
+    }
+  }
+
+private:
+  T &Lock;
+};
+
 /// A ConditionVariable that works with Mutex to allow -- as an example --
 /// multi-threaded producers and consumers to signal each other in a safe way.
 class ConditionVariable {
-  friend class Mutex;
+  friend class ConditionMutex;
+  friend class StaticConditionVariable;
 
   ConditionVariable(const ConditionVariable &) = delete;
   ConditionVariable &operator=(const ConditionVariable &) = delete;
@@ -58,6 +131,191 @@ public:
 
 private:
   ConditionHandle Handle;
+
+public:
+  /// A Mutex object that also supports ConditionVariables.
+  ///
+  /// This is NOT a recursive mutex.
+  class Mutex {
+
+    Mutex(const Mutex &) = delete;
+    Mutex &operator=(const Mutex &) = delete;
+    Mutex(Mutex &&) = delete;
+    Mutex &operator=(Mutex &&) = delete;
+
+  public:
+    /// Constructs a non-recursive mutex.
+    ///
+    /// If `checked` is true the mutex will attempt to check for misuse and
+    /// fatalError when detected. If `checked` is false (the default) the
+    /// mutex will make little to no effort to check for misuse (more
+    /// efficient).
+    explicit Mutex(bool checked = false) {
+      MutexPlatformHelper::init(Handle, checked);
+    }
+    ~Mutex() { MutexPlatformHelper::destroy(Handle); }
+
+    /// The lock() method has the following properties:
+    /// - Behaves as an atomic operation.
+    /// - Blocks the calling thread until exclusive ownership of the mutex
+    ///   can be obtained.
+    /// - Prior m.unlock() operations on the same mutex synchronize-with
+    ///   this lock operation.
+    /// - The behavior is undefined if the calling thread already owns
+    ///   the mutex (likely a deadlock).
+    /// - Does not throw exceptions but will halt on error (fatalError).
+    void lock() { MutexPlatformHelper::lock(Handle); }
+
+    /// The unlock() method has the following properties:
+    /// - Behaves as an atomic operation.
+    /// - Releases the calling thread's ownership of the mutex and
+    ///   synchronizes-with the subsequent successful lock operations on
+    ///   the same object.
+    /// - The behavior is undefined if the calling thread does not own
+    ///   the mutex.
+    /// - Does not throw exceptions but will halt on error (fatalError).
+    void unlock() { MutexPlatformHelper::unlock(Handle); }
+
+    /// The try_lock() method has the following properties:
+    /// - Behaves as an atomic operation.
+    /// - Attempts to obtain exclusive ownership of the mutex for the calling
+    ///   thread without blocking. If ownership is not obtained, returns
+    ///   immediately. The function is allowed to spuriously fail and return
+    ///   even if the mutex is not currently owned by another thread.
+    /// - If try_lock() succeeds, prior unlock() operations on the same object
+    ///   synchronize-with this operation. lock() does not synchronize with a
+    ///   failed try_lock()
+    /// - The behavior is undefined if the calling thread already owns
+    ///   the mutex (likely a deadlock)?
+    /// - Does not throw exceptions but will halt on error (fatalError).
+    bool try_lock() { return MutexPlatformHelper::try_lock(Handle); }
+
+    /// Releases lock, waits on supplied condition, and relocks before
+    /// returning.
+    ///
+    /// Precondition: Mutex held by this thread, undefined otherwise.
+    void wait(ConditionVariable &condition) {
+      ConditionPlatformHelper::wait(condition.Handle, Handle);
+    }
+
+    /// Acquires lock before calling the supplied critical section and releases
+    /// lock on return from critical section.
+    ///
+    /// This call can block while waiting for the lock to become available.
+    ///
+    /// For example the following mutates value while holding the mutex lock.
+    ///
+    /// ```
+    ///   mutex.lock([&value] { value++; });
+    /// ```
+    ///
+    /// Precondition: Mutex not held by this thread, undefined otherwise.
+    template <typename CriticalSection>
+    auto withLock(CriticalSection criticalSection)
+        -> decltype(criticalSection()) {
+      ScopedLock guard(*this);
+      return criticalSection();
+    }
+
+    /// Acquires lock before calling the supplied critical section. If critical
+    /// section returns `false` then it will wait on the supplied condition and
+    /// call the critical section again when wait returns (after acquiring
+    /// lock). If critical section returns `true` (done) it will no longer wait,
+    /// it will release the lock and return (lockOrWait returns to caller).
+    ///
+    /// This call can block while waiting for the lock to become available.
+    ///
+    /// For example the following will loop waiting on the condition until
+    /// `value > 0`. It will then "consume" that value and stop looping.
+    /// ...all while being correctly protected by mutex.
+    ///
+    /// ```
+    ///   mutex.withLockOrWait(condition, [&value] {
+    ///     if (value > 0) {
+    ///       value--;
+    ///       return true;
+    ///     }
+    ///    return false;
+    ///   });
+    /// ```
+    ///
+    /// Precondition: Mutex not held by this thread, undefined otherwise.
+    template <typename CriticalSection>
+    void withLockOrWait(ConditionVariable &condition,
+                        CriticalSection criticalSection) {
+      withLock([&] {
+        while (!criticalSection()) {
+          wait(condition);
+        }
+      });
+    }
+
+    /// Acquires lock before calling the supplied critical section and on return
+    /// from critical section it notifies one waiter of supplied condition and
+    /// then releases the lock.
+    ///
+    /// This call can block while waiting for the lock to become available.
+    ///
+    /// For example the following mutates value while holding the mutex lock and
+    /// then notifies one condition waiter about this change.
+    ///
+    /// ```
+    ///   mutex.withLockThenNotifyOne(condition, [&value] { value++; });
+    /// ```
+    ///
+    /// Precondition: Mutex not held by this thread, undefined otherwise.
+    template <typename CriticalSection>
+    auto withLockThenNotifyOne(ConditionVariable &condition,
+                               CriticalSection criticalSection)
+        -> decltype(criticalSection()) {
+      return withLock([&] {
+        ScopedNotifyOne guard(condition);
+        return criticalSection();
+      });
+    }
+
+    /// Acquires lock before calling the supplied critical section and on return
+    /// from critical section it notifies all waiters of supplied condition and
+    /// then releases the lock.
+    ///
+    /// This call can block while waiting for the lock to become available.
+    ///
+    /// For example the following mutates value while holding the mutex lock and
+    /// then notifies all condition waiters about this change.
+    ///
+    /// ```
+    ///   mutex.withLockThenNotifyAll(condition, [&value] { value++; });
+    /// ```
+    ///
+    /// Precondition: Mutex not held by this thread, undefined otherwise.
+    template <typename CriticalSection>
+    auto withLockThenNotifyAll(ConditionVariable &condition,
+                               CriticalSection criticalSection)
+        -> decltype(criticalSection()) {
+      return withLock([&] {
+        ScopedNotifyAll guard(condition);
+        return criticalSection();
+      });
+    }
+
+    /// A stack based object that locks the supplied mutex on construction
+    /// and unlocks it on destruction.
+    ///
+    /// Precondition: Mutex unlocked by this thread, undefined otherwise.
+    typedef ScopedLockT<Mutex, false> ScopedLock;
+
+    /// A stack based object that unlocks the supplied mutex on construction
+    /// and relocks it on destruction.
+    ///
+    /// Precondition: Mutex locked by this thread, undefined otherwise.
+    typedef ScopedLockT<Mutex, true> ScopedUnlock;
+
+  private:
+    ConditionMutexHandle Handle;
+  };
+
+  using ScopedNotifyOne = ScopedNotifyOneT<ConditionVariable>;
+  using ScopedNotifyAll = ScopedNotifyAllT<ConditionVariable>;
 };
 
 /// A Mutex object that supports `BasicLockable` and `Lockable` C++ concepts.
@@ -118,13 +376,6 @@ public:
   /// - Does not throw exceptions but will halt on error (fatalError).
   bool try_lock() { return MutexPlatformHelper::try_lock(Handle); }
 
-  /// Releases lock, waits on supplied condition, and relocks before returning.
-  ///
-  /// Precondition: Mutex held by this thread, undefined otherwise.
-  void wait(ConditionVariable &condition) {
-    ConditionPlatformHelper::wait(condition.Handle, Handle);
-  }
-
   /// Acquires lock before calling the supplied critical section and releases
   /// lock on return from critical section.
   ///
@@ -138,94 +389,106 @@ public:
   ///
   /// Precondition: Mutex not held by this thread, undefined otherwise.
   template <typename CriticalSection>
-  void withLock(CriticalSection criticalSection) {
-    lock();
-    criticalSection();
-    unlock();
+  auto withLock(CriticalSection criticalSection)
+      -> decltype(criticalSection()) {
+    ScopedLock guard(*this);
+    return criticalSection();
   }
 
-  /// Acquires lock before calling the supplied critical section. If critical
-  /// section returns `false` then it will wait on the supplied condition and
-  /// call the critical section again when wait returns (after acquiring lock).
-  /// If critical section returns `true` (done) it will no longer wait, it
-  /// will release the lock and return (lockOrWait returns to caller).
+  /// A stack based object that locks the supplied mutex on construction
+  /// and unlocks it on destruction.
   ///
-  /// This call can block while waiting for the lock to become available.
-  ///
-  /// For example the following will loop waiting on the condition until
-  /// `value > 0`. It will then "consume" that value and stop looping.
-  /// ...all while being correctly protected by mutex.
-  ///
-  /// ```
-  ///   mutex.withLockOrWait(condition, [&value] {
-  ///     if (value > 0) {
-  ///       value--;
-  ///       return true;
-  ///     }
-  ///    return false;
-  ///   });
-  /// ```
-  ///
-  /// Precondition: Mutex not held by this thread, undefined otherwise.
-  template <typename CriticalSection>
-  void withLockOrWait(ConditionVariable &condition,
-                      CriticalSection criticalSection) {
-    withLock([&] {
-      while (!criticalSection()) {
-        wait(condition);
-      }
-    });
-  }
+  /// Precondition: Mutex unlocked by this thread, undefined otherwise.
+  typedef ScopedLockT<Mutex, false> ScopedLock;
 
-  /// Acquires lock before calling the supplied critical section and on return
-  /// from critical section it notifies one waiter of supplied condition and
-  /// then releases the lock.
+  /// A stack based object that unlocks the supplied mutex on construction
+  /// and relocks it on destruction.
   ///
-  /// This call can block while waiting for the lock to become available.
-  ///
-  /// For example the following mutates value while holding the mutex lock and
-  /// then notifies one condition waiter about this change.
-  ///
-  /// ```
-  ///   mutex.withLockThenNotifyOne(condition, [&value] { value++; });
-  /// ```
-  ///
-  /// Precondition: Mutex not held by this thread, undefined otherwise.
-  template <typename CriticalSection>
-  void withLockThenNotifyOne(ConditionVariable &condition,
-                             CriticalSection criticalSection) {
-    withLock([&] {
-      criticalSection();
-      condition.notifyOne();
-    });
-  }
-
-  /// Acquires lock before calling the supplied critical section and on return
-  /// from critical section it notifies all waiters of supplied condition and
-  /// then releases the lock.
-  ///
-  /// This call can block while waiting for the lock to become available.
-  ///
-  /// For example the following mutates value while holding the mutex lock and
-  /// then notifies all condition waiters about this change.
-  ///
-  /// ```
-  ///   mutex.withLockThenNotifyAll(condition, [&value] { value++; });
-  /// ```
-  ///
-  /// Precondition: Mutex not held by this thread, undefined otherwise.
-  template <typename CriticalSection>
-  void withLockThenNotifyAll(ConditionVariable &condition,
-                             CriticalSection criticalSection) {
-    withLock([&] {
-      criticalSection();
-      condition.notifyAll();
-    });
-  }
+  /// Precondition: Mutex locked by this thread, undefined otherwise.
+  typedef ScopedLockT<Mutex, true> ScopedUnlock;
 
 private:
   MutexHandle Handle;
 };
+
+/// Compile time adjusted stack based object that locks/unlocks the supplied
+/// ReadWriteLock type. Use the provided typedefs instead of this directly.
+template <typename T, bool Read, bool Inverted> class ScopedRWLockT {
+
+  ScopedRWLockT() = delete;
+  ScopedRWLockT(const ScopedRWLockT &) = delete;
+  ScopedRWLockT &operator=(const ScopedRWLockT &) = delete;
+  ScopedRWLockT(ScopedRWLockT &&) = delete;
+  ScopedRWLockT &operator=(ScopedRWLockT &&) = delete;
+
+public:
+  explicit ScopedRWLockT(T &l) : Lock(l) {
+    if (Inverted) {
+      if (Read) {
+        Lock.readUnlock();
+      } else {
+        Lock.writeUnlock();
+      }
+    } else {
+      if (Read) {
+        Lock.readLock();
+      } else {
+        Lock.writeLock();
+      }
+    }
+  }
+
+  ~ScopedRWLockT() {
+    if (Inverted) {
+      if (Read) {
+        Lock.readLock();
+      } else {
+        Lock.writeLock();
+      }
+    } else {
+      if (Read) {
+        Lock.readUnlock();
+      } else {
+        Lock.writeUnlock();
+      }
+    }
+  }
+
+private:
+  T &Lock;
+};
+
+class ReadWriteLock;
+class StaticReadWriteLock;
+
+/// A stack based object that unlocks the supplied ReadWriteLock on
+/// construction and locks it for reading on destruction.
+///
+/// Precondition: ReadWriteLock unlocked by this thread, undefined otherwise.
+typedef ScopedRWLockT<ReadWriteLock, true, false> ScopedReadLock;
+typedef ScopedRWLockT<StaticReadWriteLock, true, false> StaticScopedReadLock;
+
+/// A stack based object that unlocks the supplied ReadWriteLock on
+/// construction and locks it for reading on destruction.
+///
+/// Precondition: ReadWriteLock unlocked by this thread, undefined
+/// otherwise.
+typedef ScopedRWLockT<ReadWriteLock, true, true> ScopedReadUnlock;
+typedef ScopedRWLockT<StaticReadWriteLock, true, true> StaticScopedReadUnlock;
+
+/// A stack based object that unlocks the supplied ReadWriteLock on
+/// construction and locks it for reading on destruction.
+///
+/// Precondition: ReadWriteLock unlocked by this thread, undefined otherwise.
+typedef ScopedRWLockT<ReadWriteLock, false, false> ScopedWriteLock;
+typedef ScopedRWLockT<StaticReadWriteLock, false, false> StaticScopedWriteLock;
+
+/// A stack based object that unlocks the supplied ReadWriteLock on
+/// construction and locks it for writing on destruction.
+///
+/// Precondition: ReadWriteLock unlocked by this thread, undefined otherwise.
+typedef ScopedRWLockT<ReadWriteLock, false, true> ScopedWriteUnlock;
+typedef ScopedRWLockT<StaticReadWriteLock, false, true> StaticScopedWriteUnlock;
 
 /// A Read / Write lock object that has semantics similar to `BasicLockable`
 /// and `Lockable` C++ concepts however it supports multiple concurrent
@@ -350,10 +613,10 @@ public:
   ///
   /// Precondition: ReadWriteLock not held by this thread, undefined otherwise.
   template <typename CriticalSection>
-  void withReadLock(CriticalSection criticalSection) {
-    readLock();
-    criticalSection();
-    readUnlock();
+  auto withReadLock(CriticalSection criticalSection)
+      -> decltype(criticalSection()) {
+    ScopedReadLock guard(*this);
+    return criticalSection();
   }
 
   /// Acquires write lock before calling the supplied critical section and
@@ -370,10 +633,10 @@ public:
   ///
   /// Precondition: ReadWriteLock not held by this thread, undefined otherwise.
   template <typename CriticalSection>
-  void withWriteLock(CriticalSection criticalSection) {
-    writeLock();
-    criticalSection();
-    writeUnlock();
+  auto withWriteLock(CriticalSection criticalSection)
+      -> decltype(criticalSection()) {
+    ScopedWriteLock guard(*this);
+    return criticalSection();
   }
 
 private:
@@ -384,8 +647,6 @@ private:
 ///
 /// Use ConditionVariable instead unless you need static allocation.
 class StaticConditionVariable {
-  friend class StaticMutex;
-
   StaticConditionVariable(const StaticConditionVariable &) = delete;
   StaticConditionVariable &operator=(const StaticConditionVariable &) = delete;
   StaticConditionVariable(StaticConditionVariable &&) = delete;
@@ -404,6 +665,101 @@ public:
 
   /// See ConditionVariable::notifyAll
   void notifyAll() { ConditionPlatformHelper::notifyAll(Handle); }
+
+  using ScopedNotifyOne = ScopedNotifyOneT<StaticConditionVariable>;
+  using ScopedNotifyAll = ScopedNotifyAllT<StaticConditionVariable>;
+
+  /// A static allocation variant of ConditionVariable::Mutex.
+  ///
+  /// Use ConditionVariable::Mutex instead unless you need static allocation.
+  class StaticMutex {
+
+    StaticMutex(const StaticMutex &) = delete;
+    StaticMutex &operator=(const StaticMutex &) = delete;
+    StaticMutex(StaticMutex &&) = delete;
+    StaticMutex &operator=(StaticMutex &&) = delete;
+
+  public:
+#if SWIFT_MUTEX_SUPPORTS_CONSTEXPR
+    constexpr
+#endif
+        StaticMutex()
+        : Handle(MutexPlatformHelper::conditionStaticInit()) {
+    }
+
+    /// See Mutex::lock
+    void lock() { MutexPlatformHelper::lock(Handle); }
+
+    /// See Mutex::unlock
+    void unlock() { MutexPlatformHelper::unlock(Handle); }
+
+    /// See Mutex::try_lock
+    bool try_lock() { return MutexPlatformHelper::try_lock(Handle); }
+
+    /// See Mutex::wait
+    void wait(StaticConditionVariable &condition) {
+      ConditionPlatformHelper::wait(condition.Handle, Handle);
+    }
+    void wait(ConditionVariable &condition) {
+      ConditionPlatformHelper::wait(condition.Handle, Handle);
+    }
+
+    /// See Mutex::lock
+    template <typename CriticalSection>
+    auto withLock(CriticalSection criticalSection)
+        -> decltype(criticalSection()) {
+      ScopedLock guard(*this);
+      return criticalSection();
+    }
+
+    /// See Mutex::withLockOrWait
+    template <typename CriticalSection>
+    void withLockOrWait(StaticConditionVariable &condition,
+                        CriticalSection criticalSection) {
+      withLock([&] {
+        while (!criticalSection()) {
+          wait(condition);
+        }
+      });
+    }
+
+    /// See Mutex::withLockThenNotifyOne
+    template <typename CriticalSection>
+    auto withLockThenNotifyOne(StaticConditionVariable &condition,
+                               CriticalSection criticalSection)
+        -> decltype(criticalSection()) {
+      return withLock([&] {
+        StaticConditionVariable::ScopedNotifyOne guard(condition);
+        return criticalSection();
+      });
+    }
+
+    /// See Mutex::withLockThenNotifyAll
+    template <typename CriticalSection>
+    auto withLockThenNotifyAll(StaticConditionVariable &condition,
+                               CriticalSection criticalSection)
+        -> decltype(criticalSection()) {
+      return withLock([&] {
+        StaticConditionVariable::ScopedNotifyAll guard(condition);
+        return criticalSection();
+      });
+    }
+
+    /// A stack based object that locks the supplied mutex on construction
+    /// and unlocks it on destruction.
+    ///
+    /// Precondition: Mutex unlocked by this thread, undefined otherwise.
+    typedef ScopedLockT<StaticMutex, false> ScopedLock;
+
+    /// A stack based object that unlocks the supplied mutex on construction
+    /// and relocks it on destruction.
+    ///
+    /// Precondition: Mutex locked by this thread, undefined otherwise.
+    typedef ScopedLockT<StaticMutex, true> ScopedUnlock;
+
+  private:
+    ConditionMutexHandle Handle;
+  };
 
 private:
   ConditionHandle Handle;
@@ -436,49 +792,25 @@ public:
   /// See Mutex::try_lock
   bool try_lock() { return MutexPlatformHelper::try_lock(Handle); }
 
-  /// See Mutex::wait
-  void wait(StaticConditionVariable &condition) {
-    ConditionPlatformHelper::wait(condition.Handle, Handle);
-  }
-
   /// See Mutex::lock
   template <typename CriticalSection>
-  void withLock(CriticalSection criticalSection) {
-    lock();
-    criticalSection();
-    unlock();
+  auto withLock(CriticalSection criticalSection)
+      -> decltype(criticalSection()) {
+    ScopedLock guard(*this);
+    return criticalSection();
   }
 
-  /// See Mutex::withLockOrWait
-  template <typename CriticalSection>
-  void withLockOrWait(StaticConditionVariable &condition,
-                      CriticalSection criticalSection) {
-    withLock([&] {
-      while (!criticalSection()) {
-        wait(condition);
-      }
-    });
-  }
+  /// A stack based object that locks the supplied mutex on construction
+  /// and unlocks it on destruction.
+  ///
+  /// Precondition: Mutex unlocked by this thread, undefined otherwise.
+  typedef ScopedLockT<StaticMutex, false> ScopedLock;
 
-  /// See Mutex::withLockThenNotifyOne
-  template <typename CriticalSection>
-  void withLockThenNotifyOne(StaticConditionVariable &condition,
-                             CriticalSection criticalSection) {
-    withLock([&] {
-      criticalSection();
-      condition.notifyOne();
-    });
-  }
-
-  /// See Mutex::withLockThenNotifyAll
-  template <typename CriticalSection>
-  void withLockThenNotifyAll(StaticConditionVariable &condition,
-                             CriticalSection criticalSection) {
-    withLock([&] {
-      criticalSection();
-      condition.notifyAll();
-    });
-  }
+  /// A stack based object that unlocks the supplied mutex on construction
+  /// and relocks it on destruction.
+  ///
+  /// Precondition: Mutex locked by this thread, undefined otherwise.
+  typedef ScopedLockT<StaticMutex, true> ScopedUnlock;
 
 private:
   MutexHandle Handle;
@@ -526,18 +858,18 @@ public:
 
   /// See ReadWriteLock::withReadLock
   template <typename CriticalSection>
-  void withReadLock(CriticalSection criticalSection) {
-    readLock();
-    criticalSection();
-    readUnlock();
+  auto withReadLock(CriticalSection criticalSection)
+      -> decltype(criticalSection()) {
+    StaticScopedReadLock guard(*this);
+    return criticalSection();
   }
 
   /// See ReadWriteLock::withWriteLock
   template <typename CriticalSection>
-  void withWriteLock(CriticalSection criticalSection) {
-    writeLock();
-    criticalSection();
-    writeUnlock();
+  auto withWriteLock(CriticalSection criticalSection)
+      -> decltype(criticalSection()) {
+    StaticScopedWriteLock guard(*this);
+    return criticalSection();
   }
 
 private:
@@ -592,126 +924,46 @@ private:
   MutexHandle Handle;
 };
 
-/// Compile time adjusted stack based object that locks/unlocks the supplied
-/// Mutex type. Use the provided typedefs instead of this directly.
-template <typename T, bool Inverted> class ScopedLockT {
-
-  ScopedLockT() = delete;
-  ScopedLockT(const ScopedLockT &) = delete;
-  ScopedLockT &operator=(const ScopedLockT &) = delete;
-  ScopedLockT(ScopedLockT &&) = delete;
-  ScopedLockT &operator=(ScopedLockT &&) = delete;
-
-public:
-  explicit ScopedLockT(T &l) : Lock(l) {
-    if (Inverted) {
-      Lock.unlock();
-    } else {
-      Lock.lock();
-    }
-  }
-
-  ~ScopedLockT() {
-    if (Inverted) {
-      Lock.lock();
-    } else {
-      Lock.unlock();
-    }
-  }
-
-private:
-  T &Lock;
-};
-
-/// A stack based object that locks the supplied mutex on construction
-/// and unlocks it on destruction.
-///
-/// Precondition: Mutex unlocked by this thread, undefined otherwise.
-typedef ScopedLockT<Mutex, false> ScopedLock;
-typedef ScopedLockT<StaticMutex, false> StaticScopedLock;
-
-/// A stack based object that unlocks the supplied mutex on construction
-/// and relocks it on destruction.
-///
-/// Precondition: Mutex locked by this thread, undefined otherwise.
-typedef ScopedLockT<Mutex, true> ScopedUnlock;
-typedef ScopedLockT<StaticMutex, true> StaticScopedUnlock;
-
-/// Compile time adjusted stack based object that locks/unlocks the supplied
-/// ReadWriteLock type. Use the provided typedefs instead of this directly.
-template <typename T, bool Read, bool Inverted> class ScopedRWLockT {
-
-  ScopedRWLockT() = delete;
-  ScopedRWLockT(const ScopedRWLockT &) = delete;
-  ScopedRWLockT &operator=(const ScopedRWLockT &) = delete;
-  ScopedRWLockT(ScopedRWLockT &&) = delete;
-  ScopedRWLockT &operator=(ScopedRWLockT &&) = delete;
+/// An indirect variant of a Mutex. This allocates the mutex on the heap, for
+/// places where having the mutex inline takes up too much space. Used for
+/// SmallMutex on platforms where Mutex is large.
+class IndirectMutex {
+  IndirectMutex(const IndirectMutex &) = delete;
+  IndirectMutex &operator=(const IndirectMutex &) = delete;
+  IndirectMutex(IndirectMutex &&) = delete;
+  IndirectMutex &operator=(IndirectMutex &&) = delete;
 
 public:
-  explicit ScopedRWLockT(T &l) : Lock(l) {
-    if (Inverted) {
-      if (Read) {
-        Lock.readUnlock();
-      } else {
-        Lock.writeUnlock();
-      }
-    } else {
-      if (Read) {
-        Lock.readLock();
-      } else {
-        Lock.writeLock();
-      }
-    }
-  }
+  explicit IndirectMutex(bool checked = false) { Ptr = new Mutex(checked); }
+  ~IndirectMutex() { delete Ptr; }
 
-  ~ScopedRWLockT() {
-    if (Inverted) {
-      if (Read) {
-        Lock.readLock();
-      } else {
-        Lock.writeLock();
-      }
-    } else {
-      if (Read) {
-        Lock.readUnlock();
-      } else {
-        Lock.writeUnlock();
-      }
-    }
-  }
+  void lock() { Ptr->lock(); }
+
+  void unlock() { Ptr->unlock(); }
+
+  bool try_lock() { return Ptr->try_lock(); }
+
+  /// A stack based object that locks the supplied mutex on construction
+  /// and unlocks it on destruction.
+  ///
+  /// Precondition: Mutex unlocked by this thread, undefined otherwise.
+  typedef ScopedLockT<IndirectMutex, false> ScopedLock;
+
+  /// A stack based object that unlocks the supplied mutex on construction
+  /// and relocks it on destruction.
+  ///
+  /// Precondition: Mutex locked by this thread, undefined otherwise.
+  typedef ScopedLockT<IndirectMutex, true> ScopedUnlock;
 
 private:
-  T &Lock;
+  Mutex *Ptr;
 };
 
-/// A stack based object that unlocks the supplied ReadWriteLock on
-/// construction and locks it for reading on destruction.
-///
-/// Precondition: ReadWriteLock unlocked by this thread, undefined otherwise.
-typedef ScopedRWLockT<ReadWriteLock, true, false> ScopedReadLock;
-typedef ScopedRWLockT<StaticReadWriteLock, true, false> StaticScopedReadLock;
-
-/// A stack based object that unlocks the supplied ReadWriteLock on
-/// construction and locks it for reading on destruction.
-///
-/// Precondition: ReadWriteLock unlocked by this thread, undefined
-/// otherwise.
-typedef ScopedRWLockT<ReadWriteLock, true, true> ScopedReadUnlock;
-typedef ScopedRWLockT<StaticReadWriteLock, true, true> StaticScopedReadUnlock;
-
-/// A stack based object that unlocks the supplied ReadWriteLock on
-/// construction and locks it for reading on destruction.
-///
-/// Precondition: ReadWriteLock unlocked by this thread, undefined otherwise.
-typedef ScopedRWLockT<ReadWriteLock, false, false> ScopedWriteLock;
-typedef ScopedRWLockT<StaticReadWriteLock, false, false> StaticScopedWriteLock;
-
-/// A stack based object that unlocks the supplied ReadWriteLock on
-/// construction and locks it for writing on destruction.
-///
-/// Precondition: ReadWriteLock unlocked by this thread, undefined otherwise.
-typedef ScopedRWLockT<ReadWriteLock, false, true> ScopedWriteUnlock;
-typedef ScopedRWLockT<StaticReadWriteLock, false, true> StaticScopedWriteUnlock;
+/// A "small" mutex, which is pointer sized or smaller, for places where the
+/// mutex is stored inline with limited storage space. This uses a normal Mutex
+/// when that is small, and otherwise uses IndirectMutex.
+using SmallMutex =
+    std::conditional_t<sizeof(Mutex) <= sizeof(void *), Mutex, IndirectMutex>;
 
 // Enforce literal requirements for static variants.
 #if SWIFT_MUTEX_SUPPORTS_CONSTEXPR

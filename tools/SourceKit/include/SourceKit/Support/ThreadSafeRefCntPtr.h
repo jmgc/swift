@@ -120,7 +120,8 @@ public:
   }
 
   operator llvm::IntrusiveRefCntPtr<T>() const {
-    llvm::sys::ScopedLock L(*getMutex((void*)this));
+    llvm::sys::ScopedLock L(*getMutex(
+        reinterpret_cast<void *>(const_cast<ThreadSafeRefCntPtr *>(this))));
     llvm::IntrusiveRefCntPtr<T> Ref(Obj.load());
     return Ref;
   }
@@ -136,7 +137,7 @@ public:
 
   T* get() const { return Obj; }
 
-  explicit operator bool() const { return Obj; }
+  explicit operator bool() const { return get(); }
 
   void swap(llvm::IntrusiveRefCntPtr<T> &other) {
     llvm::sys::ScopedLock L(*getMutex(this));

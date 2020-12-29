@@ -66,7 +66,12 @@ public:
   /// used for Swift value layout when a reference type may reference ObjC
   /// objects.
   SpareBitVector ObjCPointerReservedBits;
-  
+
+  /// These bits, if set, indicate that a Builtin.BridgeObject value is holding
+  /// an Objective-C object.
+  SpareBitVector IsObjCPointerBit;
+
+
   /// The alignment of heap objects.  By default, assume pointer alignment.
   Alignment HeapObjectAlignment;
   
@@ -95,6 +100,10 @@ public:
   /// The value stored in a Builtin.once predicate to indicate that an
   /// initialization has already happened, if known.
   Optional<int64_t> OnceDonePredicateValue = None;
+  
+  /// True if `swift_retain` and `swift_release` are no-ops when passed
+  /// "negative" pointer values.
+  bool SwiftRetainIgnoresNegativeValues = false;
 };
 
 }

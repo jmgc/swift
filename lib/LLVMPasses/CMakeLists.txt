@@ -1,4 +1,5 @@
-add_swift_library(swiftLLVMPasses STATIC
+set_swift_llvm_is_available()
+add_swift_host_library(swiftLLVMPasses STATIC
   LLVMSwiftAA.cpp
   LLVMSwiftRCIdentity.cpp
   LLVMARCOpts.cpp
@@ -6,7 +7,8 @@ add_swift_library(swiftLLVMPasses STATIC
   LLVMInlineTree.cpp
   LLVMMergeFunctions.cpp
 
-  LLVM_COMPONENT_DEPENDS
+  LLVM_LINK_COMPONENTS
   analysis
   )
-
+target_link_libraries(swiftLLVMPasses PRIVATE
+  swiftDemangling)

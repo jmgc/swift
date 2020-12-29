@@ -1,5 +1,4 @@
-// RUN: rm -rf %t
-// RUN: mkdir -p %t
+// RUN: %empty-directory(%t)
 // RUN: %target-swift-frontend -emit-module -module-name Multi -o %t/multi-file.swiftmodule -primary-file %s %S/Inputs/multi-file-2.swift
 // RUN: %target-swift-frontend -emit-module -module-name Multi -o %t/multi-file-2.swiftmodule %s -primary-file %S/Inputs/multi-file-2.swift
 
@@ -24,8 +23,8 @@ func bar() {
   foo(EquatableEnum.A)
 }
 
-// THIS-FILE-DAG: CLASS_DECL
-// OTHER-FILE-NEG-NOT: CLASS_DECL
+// THIS-FILE-DAG: PROTOCOL_DECL
+// OTHER-FILE-NEG-NOT: PROTOCOL_DECL
 // OTHER-FILE-DAG: ENUM_DECL
 // THIS-FILE-NEG-NOT: ENUM_DECL
 
@@ -53,4 +52,9 @@ private protocol SomeProto {
 
 private struct Generic<T> {
   // THIS-FILE-DAG: GENERIC_TYPE_PARAM_DECL
+}
+
+class Sub: Base {
+  override class var conflict: Int { return 100 }
+  override var conflict: Int { return 200 }
 }

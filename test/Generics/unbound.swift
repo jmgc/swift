@@ -8,17 +8,18 @@
 // Places where generic arguments are always required
 // --------------------------------------------------
 
-struct Foo<T> { // expected-note{{generic type 'Foo' declared here}} expected-note{{generic type 'Foo' declared here}}
+struct Foo<T> { // expected-note 3{{generic type 'Foo' declared here}}
   struct Wibble { }
 }
 
 class Dict<K, V> { } // expected-note{{generic type 'Dict' declared here}} expected-note{{generic type 'Dict' declared here}} expected-note{{generic type 'Dict' declared here}}
 
-// Cannot alias a generic type without arguments.
-typealias Bar = Foo // expected-error{{reference to generic type 'Foo' requires arguments in <...>}}
-
-// Cannot refer to a member of a generic type without arguments.
+// The underlying type of a typealias can only have unbound generic arguments
+// at the top level.
+typealias F = Foo // OK
 typealias FW = Foo.Wibble // expected-error{{reference to generic type 'Foo' requires arguments in <...>}}
+typealias FFW = () -> Foo // expected-error{{reference to generic type 'Foo' requires arguments in <...>}}
+typealias OFW = Optional<() -> Foo> // expected-error{{reference to generic type 'Foo' requires arguments in <...>}}
 
 // Cannot inherit from a generic type without arguments.
 class MyDict : Dict { } // expected-error{{reference to generic type 'Dict' requires arguments in <...>}}
@@ -58,12 +59,35 @@ class SomeClassWithInvalidMethod {
 // <rdar://problem/20792596> QoI: Cannot invoke with argument list (T), expected an argument list of (T)
 protocol r20792596P {}
 
-// expected-note @+1 {{in call to function 'foor20792596'}}
-func foor20792596<T: r20792596P>(x: T) -> T {
+func foor20792596<T: r20792596P>(x: T) -> T { // expected-note {{where 'T' = 'T'}}
   return x
 }
 
 func callfoor20792596<T>(x: T) -> T {
-  return foor20792596(x) // expected-error {{generic parameter 'T' could not be inferred}}
+  return foor20792596(x)
+  // expected-error@-1 {{missing argument label 'x:' in call}}
+  // expected-error@-2 {{global function 'foor20792596(x:)' requires that 'T' conform to 'r20792596P'}}
 }
+
+// <rdar://problem/31181895> parameter "not used in function signature" when part of a superclass constraint
+struct X1<T> {
+  func bar<U>() where T: X2<U> {}
+}
+class X2<T> {}
+
+// <rdar://problem/67292528> missing check for unbound parent type
+struct Outer<K, V> {
+  struct Inner {}
+
+  struct Middle {
+    typealias Inner = Outer<K, V>.Middle
+  }
+}
+
+func makeInner() -> Outer<String, String>.Middle.Inner {
+  return .init()
+}
+
+var innerProperty: Outer.Middle.Inner = makeInner()
+// expected-error@-1 {{reference to generic type 'Outer' requires arguments in <...>}}
 

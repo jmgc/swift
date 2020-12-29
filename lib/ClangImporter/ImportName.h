@@ -20,13 +20,12 @@
 #include "ImportEnumInfo.h"
 #include "SwiftLookupTable.h"
 #include "swift/Basic/StringExtras.h"
+#include "swift/Basic/Version.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/Decl.h"
+#include "swift/AST/ForeignAsyncConvention.h"
 #include "swift/AST/ForeignErrorConvention.h"
 #include "clang/Sema/Sema.h"
-
-// TODO: remove when we drop import name options
-#include "clang/AST/Decl.h"
 
 namespace swift {
 namespace importer {
@@ -43,23 +42,139 @@ enum class ImportedAccessorKind : unsigned {
 enum { NumImportedAccessorKindBits = 3 };
 
 /// The name version
-enum class ImportNameVersion : unsigned {
-  /// Names as they appear in C/ObjC
-  Raw = 0,
+class ImportNameVersion : public RelationalOperationsBase<ImportNameVersion> {
+  unsigned rawValue : 31;
+  unsigned concurrency : 1;
 
-  /// Names as they appeared in Swift 2 family
-  Swift2,
+  friend llvm::DenseMapInfo<ImportNameVersion>;
 
-  /// Names as they appeared in Swift 3 family
-  Swift3,
+  enum AsConstExpr_t { AsConstExpr };
 
-  /// Names as they appeared in Swift 4 family
-  Swift4,
+  constexpr ImportNameVersion() : rawValue(0), concurrency(false) {}
+  constexpr ImportNameVersion(unsigned version, AsConstExpr_t)
+      : rawValue(version), concurrency(false) {}
+  explicit ImportNameVersion(unsigned version, bool concurrency = false)
+      : rawValue(version), concurrency(concurrency) {
+    assert(version >= 2 && "only Swift 2 and later are supported");
+  }
+public:
+  /// Map a language version into an import name version.
+  static ImportNameVersion fromOptions(const LangOptions &langOpts) {
+    // We encode the 'rawValue' as just major version numbers with the
+    // exception of '4.2', which is a special minor version that can impact
+    // importing of names.  We treat that with a rawValue of 5, and treat
+    // all major values of 5 or higher as being rawValue = majorversion + 1.
+    const auto &version = langOpts.EffectiveLanguageVersion;
+    // If the effective version is 4.x, where x >= 2, the import version
+    // is 4.2.
+    if (version.size() > 1 && version[0] == 4 && version[1] >= 2) {
+      return ImportNameVersion::swift4_2();
+    }
+    unsigned major = version[0];
+    return ImportNameVersion(major >= 5 ? major + 1 : major, false);
+  }
+
+  unsigned majorVersionNumber() const {
+    assert(*this != ImportNameVersion::raw());
+    if (*this == ImportNameVersion::swift4_2())
+      return 4;
+    return rawValue < 5 ? rawValue : rawValue - 1;
+  }
+
+  unsigned minorVersionNumber() const {
+    assert(*this != ImportNameVersion::raw());
+    if (*this == ImportNameVersion::swift4_2())
+      return 2;
+    return 0;
+  }
+
+  llvm::VersionTuple asClangVersionTuple() const {
+    assert(*this != ImportNameVersion::raw());
+    return llvm::VersionTuple(majorVersionNumber(), minorVersionNumber());
+  }
+
+  /// Whether to consider importing functions as 'async'.
+  bool supportsConcurrency() const { return concurrency; }
+
+  ImportNameVersion withConcurrency(bool concurrency) const {
+    ImportNameVersion result = *this;
+    result.concurrency = concurrency;
+    return result;
+  }
+
+  bool operator==(ImportNameVersion other) const {
+    return rawValue == other.rawValue && concurrency == other.concurrency;
+  }
+  bool operator<(ImportNameVersion other) const {
+    return rawValue < other.rawValue ||
+        (rawValue == other.rawValue && concurrency < other.concurrency);
+  }
+
+  /// Calls \p action for each name version other than this one, first going
+  /// backwards until ImportNameVersion::raw(), and then going forwards to
+  /// ImportNameVersion::maxVersion().
+  ///
+  /// This is the most useful order for importing compatibility stubs.
+  void forEachOtherImportNameVersion(
+      bool withConcurrency,
+      llvm::function_ref<void(ImportNameVersion)> action) const {
+    assert(*this >= ImportNameVersion::swift2());
+
+    ImportNameVersion nameVersion = *this;
+    assert(!nameVersion.supportsConcurrency());
+
+    // If we've been asked to also consider concurrency, do so for the
+    // primary version (only).
+    if (withConcurrency) {
+      action(nameVersion.withConcurrency(true));
+    }
+
+    while (nameVersion > ImportNameVersion::swift2()) {
+      --nameVersion.rawValue;
+      action(nameVersion);
+    }
+
+    action(ImportNameVersion::raw());
+
+    nameVersion = *this;
+    while (nameVersion < ImportNameVersion::maxVersion()) {
+      ++nameVersion.rawValue;
+      action(nameVersion);
+    }
+  }
+
+  /// Names as they appear in C/ObjC.
+  static constexpr inline ImportNameVersion raw() {
+    return ImportNameVersion{};
+  }
+
+  /// Names as they appeared in Swift 2 family.
+  static constexpr inline ImportNameVersion swift2() {
+    return ImportNameVersion{2, AsConstExpr};
+  }
+
+  /// Names as they appeared in Swift 4.2 family.
+  static constexpr inline ImportNameVersion swift4_2() {
+    return ImportNameVersion{5, AsConstExpr};
+  }
+
+  /// The latest supported version.
+  ///
+  /// FIXME: All other version information is in Version.h. Can this go there
+  /// instead?
+  static constexpr inline ImportNameVersion maxVersion() {
+    return ImportNameVersion{6, AsConstExpr};
+  }
+
+  /// The version which should be used for importing types, which need to have
+  /// one canonical definition.
+  ///
+  /// FIXME: Is this supposed to be the /newest/ version, or a canonical
+  /// version that lasts forever as part of the ABI?
+  static constexpr inline ImportNameVersion forTypes() {
+    return ImportNameVersion::maxVersion();
+  }
 };
-enum { NumImportNameVersions = 4 };
-
-/// Map a language version into an import name version
-ImportNameVersion nameVersionFromOptions(const LangOptions &langOpts);
 
 /// Describes a name that was imported from Clang.
 class ImportedName {
@@ -83,17 +198,16 @@ class ImportedName {
     /// throwing Swift methods, describes how the mapping is performed.
     ForeignErrorConvention::Info errorInfo;
 
+    /// For names that map Objective-C completion handlers into async
+    /// Swift methods, describes how the mapping is performed.
+    ForeignAsyncConvention::Info asyncInfo;
+
     /// For a declaration name that makes the declaration into an
     /// instance member, the index of the "Self" parameter.
     unsigned selfIndex;
 
     /// For an initializer, the kind of initializer to import.
     CtorInitializerKind initKind;
-
-    /// The version of Swift this name corresponds to.
-    ///
-    /// \see ImportNameVersion
-    unsigned rawVersion : 2;
 
     /// What kind of accessor this name refers to, if any.
     ImportedAccessorKind accessorKind : NumImportedAccessorKindBits;
@@ -114,11 +228,13 @@ class ImportedName {
 
     unsigned hasErrorInfo : 1;
 
+    unsigned hasAsyncInfo : 1;
+
     Info()
         : errorInfo(), selfIndex(), initKind(CtorInitializerKind::Designated),
-          rawVersion(), accessorKind(ImportedAccessorKind::None),
-          hasCustomName(false), droppedVariadic(false), importAsMember(false),
-          hasSelfIndex(false), hasErrorInfo(false) {}
+          accessorKind(ImportedAccessorKind::None), hasCustomName(false),
+          droppedVariadic(false), importAsMember(false), hasSelfIndex(false),
+          hasErrorInfo(false), hasAsyncInfo(false) {}
   } info;
 
 public:
@@ -138,16 +254,6 @@ public:
     effectiveContext = ctx;
   }
 
-  /// The highest version of Swift that this name comes from
-  ImportNameVersion getVersion() const {
-    return static_cast<ImportNameVersion>(info.rawVersion);
-  }
-
-  void setVersion(ImportNameVersion version) {
-    info.rawVersion = static_cast<unsigned>(version);
-    assert(getVersion() == version && "not enough bits");
-  }
-
   /// For an initializer, the kind of initializer to import.
   CtorInitializerKind getInitKind() const { return info.initKind; }
 
@@ -159,6 +265,14 @@ public:
   Optional<ForeignErrorConvention::Info> getErrorInfo() const {
     if (info.hasErrorInfo)
       return info.errorInfo;
+    return None;
+  }
+
+  /// For names that map Objective-C methods with completion handlers into
+  /// async Swift methods, describes how the mapping is performed.
+  Optional<ForeignAsyncConvention::Info> getAsyncInfo() const {
+    if (info.hasAsyncInfo)
+      return info.asyncInfo;
     return None;
   }
 
@@ -212,7 +326,7 @@ public:
     case ImportedAccessorKind::SubscriptSetter:
       return true;
     }
-    
+
     llvm_unreachable("Invalid ImportedAccessorKind.");
   }
 };
@@ -220,6 +334,17 @@ public:
 /// Strips a trailing "Notification", if present. Returns {} if name doesn't end
 /// in "Notification", or it there would be nothing left.
 StringRef stripNotification(StringRef name);
+
+/// Describes how a custom name was provided for 'async' import.
+enum class CustomAsyncName {
+  /// No custom name was provided.
+  None,
+  /// A custom swift_name (but not swift_async_name) was provided.
+  SwiftName,
+  /// A custom swift_async_name was provided, which won't have a completion
+  /// handler argument label.
+  SwiftAsyncName,
+};
 
 /// Class to determine the Swift name of foreign entities. Currently fairly
 /// stateless and borrows from the ClangImporter::Implementation, but in the
@@ -241,16 +366,45 @@ class NameImporter {
   /// Cache for repeated calls
   llvm::DenseMap<CacheKeyType, ImportedName> importNameCache;
 
+  /// The set of property names that show up in the defining module of
+  /// an Objective-C class.
+  llvm::DenseMap<std::pair<const clang::ObjCInterfaceDecl *, char>,
+                 std::unique_ptr<InheritedNameSet>> allProperties;
+
 public:
   NameImporter(ASTContext &ctx, const PlatformAvailability &avail,
                clang::Sema &cSema, bool inferIAM)
       : swiftCtx(ctx), availability(avail), clangSema(cSema),
-        enumInfos(swiftCtx, clangSema.getPreprocessor()),
+        enumInfos(clangSema.getPreprocessor()),
         inferImportAsMember(inferIAM) {}
 
   /// Determine the Swift name for a Clang decl
   ImportedName importName(const clang::NamedDecl *decl,
-                          ImportNameVersion version);
+                          ImportNameVersion version,
+                          clang::DeclarationName preferredName =
+                            clang::DeclarationName());
+
+  /// Attempts to import the name of \p decl with each possible
+  /// ImportNameVersion. \p action will be called with each unique name.
+  ///
+  /// In this case, "unique" means either the full name is distinct or the
+  /// effective context is distinct. This method does not attempt to handle
+  /// "unresolved" contexts in any special way---if one name references a
+  /// particular Clang declaration and the other has an unresolved context that
+  /// will eventually reference that declaration, the contexts will still be
+  /// considered distinct.
+  ///
+  /// If \p action returns false, the current name will \e not be added to the
+  /// set of seen names.
+  ///
+  /// The active name for \p activeVerion is always first, followed by the
+  /// other names in the order of
+  /// ImportNameVersion::forEachOtherImportNameVersion.
+  ///
+  /// Returns \c true if it fails to import name for the active version.
+  bool forEachDistinctImportName(
+      const clang::NamedDecl *decl, ImportNameVersion activeVersion,
+      llvm::function_ref<bool(ImportedName, ImportNameVersion)> action);
 
   /// Imports the name of the given Clang macro into Swift.
   Identifier importMacroName(const clang::IdentifierInfo *clangIdentifier,
@@ -282,6 +436,11 @@ public:
     return getClangSema().getPreprocessor();
   }
 
+  /// Retrieve the inherited name set for the given Objective-C class.
+  const InheritedNameSet *getAllPropertyNames(
+                            clang::ObjCInterfaceDecl *classDecl,
+                            bool forInstance);
+
 private:
   bool enableObjCInterop() const { return swiftCtx.LangOpts.EnableObjCInterop; }
 
@@ -305,15 +464,23 @@ private:
                       ArrayRef<const clang::ParmVarDecl *> params,
                       bool isInitializer, bool hasCustomName);
 
-  /// Whether we should import this as Swift Private
-  bool shouldBeSwiftPrivate(const clang::NamedDecl *, clang::Sema &clangSema);
+  Optional<ForeignAsyncConvention::Info>
+  considerAsyncImport(const clang::ObjCMethodDecl *clangDecl,
+                      StringRef baseName,
+                      SmallVectorImpl<StringRef> &paramNames,
+                      ArrayRef<const clang::ParmVarDecl *> params,
+                      bool isInitializer,
+                      Optional<unsigned> explicitCompletionHandlerParamIndex,
+                      CustomAsyncName customName,
+                      Optional<ForeignErrorConvention::Info> errorInfo);
 
   EffectiveClangContext determineEffectiveContext(const clang::NamedDecl *,
                                                   const clang::DeclContext *,
                                                   ImportNameVersion version);
 
   ImportedName importNameImpl(const clang::NamedDecl *,
-                              ImportNameVersion version);
+                              ImportNameVersion version,
+                              clang::DeclarationName);
 };
 
 }
@@ -331,7 +498,7 @@ template <> struct DenseMapInfo<swift::importer::ImportNameVersion> {
     return (ImportNameVersion)DMIU::getTombstoneKey();
   }
   static unsigned getHashValue(const ImportNameVersion &Val) {
-    return DMIU::getHashValue((unsigned)Val);
+    return DMIU::getHashValue(Val.rawValue);
   }
   static bool isEqual(const ImportNameVersion &LHS,
                       const ImportNameVersion &RHS) {

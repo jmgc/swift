@@ -4,8 +4,6 @@ class NotEquatable {}
 
 func test_ArrayOfNotEquatableIsNotEquatable() {
   var a = [ NotEquatable(), NotEquatable() ]
-  // FIXME: This is an awful error.
-  if a == a {} // expected-error {{binary operator '==' cannot be applied to two '[NotEquatable]' operands}}
-  // expected-note @-1 {{overloads for '==' exist with these partially matching parameter lists: }}
+  // There is also a note attached to declaration - requirement from conditional conformance of '[NotEquatable]' to 'Equatable'
+  if a == a {} // expected-error {{operator function '==' requires that 'NotEquatable' conform to 'Equatable'}}
 }
-

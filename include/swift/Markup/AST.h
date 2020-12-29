@@ -15,6 +15,7 @@
 
 #include "swift/Markup/LineList.h"
 #include "llvm/ADT/Optional.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/TrailingObjects.h"
 
@@ -26,7 +27,9 @@ class MarkupASTNode;
 class Paragraph;
 class ParamField;
 class ReturnsField;
+class TagField;
 class ThrowsField;
+class LocalizationKeyField;
 
 /// The basic structure of a doc comment attached to a Swift
 /// declaration.
@@ -34,8 +37,10 @@ struct CommentParts {
   Optional<const Paragraph *> Brief;
   ArrayRef<const MarkupASTNode *> BodyNodes;
   ArrayRef<ParamField *> ParamFields;
-  Optional<const ReturnsField *> ReturnsField;
-  Optional<const ThrowsField *> ThrowsField;
+  Optional<const swift::markup::ReturnsField *> ReturnsField;
+  Optional<const swift::markup::ThrowsField *> ThrowsField;
+  llvm::SmallSetVector<StringRef, 8> Tags;
+  Optional<const swift::markup::LocalizationKeyField *> LocalizationKeyField;
 
   bool isEmpty() const {
     return !Brief.hasValue() &&

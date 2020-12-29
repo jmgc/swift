@@ -5,8 +5,8 @@
 // Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
 // Licensed under Apache License v2.0 with Runtime Library Exception
 //
-// See http://swift.org/LICENSE.txt for license information
-// See http://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
+// See https://swift.org/LICENSE.txt for license information
+// See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 //
 //===----------------------------------------------------------------------===//
 //
@@ -18,8 +18,11 @@
 #define SWIFT_LAYOUT_CONSTRAINT_H
 
 #include "swift/AST/TypeAlignments.h"
+#include "swift/Basic/Debug.h"
 #include "swift/Basic/SourceLoc.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/FoldingSet.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/StringRef.h"
 #include "swift/AST/PrintOptions.h"
 
@@ -30,31 +33,38 @@ class ASTContext;
 class ASTPrinter;
 
 /// Describes a layout constraint information.
-enum class LayoutConstraintKind : unsigned char {
+enum class LayoutConstraintKind : uint8_t {
   // It is not a known layout constraint.
   UnknownLayout,
-  // It is a layout constraint representing a trivial type of an unknown size.
+  // It is a layout constraint representing a trivial type of a known size.
   TrivialOfExactSize,
-  // It is a layout constraint representing a trivial type of an unknown size.
+  // It is a layout constraint representing a trivial type of a size known to
+  // be no larger than a given size.
   TrivialOfAtMostSize,
   // It is a layout constraint representing a trivial type of an unknown size.
   Trivial,
+  // It is a layout constraint representing a reference counted class instance.
+  Class,
+  // It is a layout constraint representing a reference counted native class
+  // instance.
+  NativeClass,
   // It is a layout constraint representing a reference counted object.
   RefCountedObject,
   // It is a layout constraint representing a native reference counted object.
   NativeRefCountedObject,
+  LastLayout = NativeRefCountedObject,
 };
 
 /// This is a class representing the layout constraint.
-class LayoutConstraintInfo {
+class LayoutConstraintInfo : public llvm::FoldingSetNode {
+  friend class LayoutConstraint;
   // Alignment of the layout in bytes.
-  unsigned Alignment;
+  const unsigned Alignment : 16;
   // Size of the layout in bits.
-  unsigned SizeInBits : 24;
+  const unsigned SizeInBits : 24;
   // Kind of the layout.
-  LayoutConstraintKind Kind;
+  const LayoutConstraintKind Kind;
 
-public:
   LayoutConstraintInfo()
       : Alignment(0), SizeInBits(0), Kind(LayoutConstraintKind::UnknownLayout) {
   }
@@ -73,44 +83,54 @@ public:
                        unsigned Alignment)
       : Alignment(Alignment), SizeInBits(SizeInBits), Kind(Kind) {
     assert(
-        isKnownSizeTrivial() &&
+        isTrivial() &&
         "Size in bits should be specified only for trivial layout constraints");
   }
-
-  static LayoutConstraintInfo getUnknownLayout() {
-    return LayoutConstraintInfo(LayoutConstraintKind::UnknownLayout);
-  }
-
+  public:
   LayoutConstraintKind getKind() const { return Kind; }
 
   bool isKnownLayout() const {
-    return Kind != LayoutConstraintKind::UnknownLayout;
+    return isKnownLayout(Kind);
   }
 
   bool isFixedSizeTrivial() const {
-    return Kind == LayoutConstraintKind::TrivialOfExactSize;
+    return isFixedSizeTrivial(Kind);
   }
 
   bool isKnownSizeTrivial() const {
-    return Kind > LayoutConstraintKind::UnknownLayout &&
-           Kind < LayoutConstraintKind::Trivial;
+    return isKnownSizeTrivial(Kind);
   }
 
   bool isAddressOnlyTrivial() const {
-    return Kind == LayoutConstraintKind::Trivial;
+    return isAddressOnlyTrivial(Kind);
   }
 
   bool isTrivial() const {
-    return Kind > LayoutConstraintKind::UnknownLayout &&
-           Kind <= LayoutConstraintKind::Trivial;
+    return isTrivial(Kind);
   }
 
   bool isRefCountedObject() const {
-    return Kind == LayoutConstraintKind::RefCountedObject;
+    return isRefCountedObject(Kind);
   }
 
   bool isNativeRefCountedObject() const {
-    return Kind == LayoutConstraintKind::NativeRefCountedObject;
+    return isNativeRefCountedObject(Kind);
+  }
+
+  bool isClass() const {
+    return isClass(Kind);
+  }
+
+  bool isNativeClass() const {
+    return isNativeClass(Kind);
+  }
+
+  bool isRefCounted() const {
+    return isRefCounted(Kind);
+  }
+
+  bool isNativeRefCounted() const {
+    return isNativeRefCounted(Kind);
   }
 
   unsigned getTrivialSizeInBytes() const {
@@ -133,9 +153,25 @@ public:
     return SizeInBits;
   }
 
-  unsigned getAlignment() const {
-    assert(isKnownSizeTrivial());
+  unsigned getAlignmentInBits() const {
     return Alignment;
+  }
+
+  unsigned getAlignmentInBytes() const {
+    assert(isKnownSizeTrivial());
+    if (Alignment)
+      return Alignment;
+
+    // There is no explicitly defined alignment. Try to come up with a
+    // reasonable one.
+
+    // If the size is a power of 2, use it also for the default alignment.
+    auto SizeInBytes = getTrivialSizeInBytes();
+    if (llvm::isPowerOf2_32(SizeInBytes))
+      return SizeInBytes * 8;
+
+    // Otherwise assume the alignment of 8 bytes.
+    return 8*8;
   }
 
   operator bool() const {
@@ -161,6 +197,39 @@ public:
   /// Return the name of a layout constraint with a given kind.
   static StringRef getName(LayoutConstraintKind Kind);
 
+  static bool isKnownLayout(LayoutConstraintKind Kind);
+
+  static bool isFixedSizeTrivial(LayoutConstraintKind Kind);
+
+  static bool isKnownSizeTrivial(LayoutConstraintKind Kind);
+
+  static bool isAddressOnlyTrivial(LayoutConstraintKind Kind);
+
+  static bool isTrivial(LayoutConstraintKind Kind);
+
+  static bool isRefCountedObject(LayoutConstraintKind Kind);
+
+  static bool isNativeRefCountedObject(LayoutConstraintKind Kind);
+
+  static bool isAnyRefCountedObject(LayoutConstraintKind Kind);
+
+  static bool isClass(LayoutConstraintKind Kind);
+
+  static bool isNativeClass(LayoutConstraintKind Kind);
+
+  static bool isRefCounted(LayoutConstraintKind Kind);
+
+  static bool isNativeRefCounted(LayoutConstraintKind Kind);
+
+  /// Uniquing for the LayoutConstraintInfo.
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    Profile(ID, Kind, SizeInBits, Alignment);
+  }
+
+  static void Profile(llvm::FoldingSetNodeID &ID,
+                      LayoutConstraintKind Kind,
+                      unsigned SizeInBits,
+                      unsigned Alignment);
   private:
   // Make vanilla new/delete illegal for LayoutConstraintInfo.
   void *operator new(size_t Bytes) throw() = delete;
@@ -171,6 +240,14 @@ public:
   void *operator new(size_t bytes, const ASTContext &ctx,
                      AllocationArena arena, unsigned alignment = 8);
   void *operator new(size_t Bytes, void *Mem) throw() { return Mem; }
+
+  // Representation of the non-parameterized layouts.
+  static LayoutConstraintInfo UnknownLayoutConstraintInfo;
+  static LayoutConstraintInfo RefCountedObjectConstraintInfo;
+  static LayoutConstraintInfo NativeRefCountedObjectConstraintInfo;
+  static LayoutConstraintInfo ClassConstraintInfo;
+  static LayoutConstraintInfo NativeClassConstraintInfo;
+  static LayoutConstraintInfo TrivialConstraintInfo;
 };
 
 /// A wrapper class containing a reference to the actual LayoutConstraintInfo
@@ -180,15 +257,34 @@ class LayoutConstraint {
   public:
   /*implicit*/ LayoutConstraint(LayoutConstraintInfo *P = 0) : Ptr(P) {}
 
+  static LayoutConstraint getLayoutConstraint(const LayoutConstraint &Layout,
+                                              ASTContext &C);
+
+  static LayoutConstraint getLayoutConstraint(LayoutConstraintKind Kind,
+                                              ASTContext &C);
+
+  static LayoutConstraint getLayoutConstraint(LayoutConstraintKind Kind);
+
+  static LayoutConstraint getLayoutConstraint(LayoutConstraintKind Kind,
+                                              unsigned SizeInBits,
+                                              unsigned Alignment,
+                                              ASTContext &C);
+
+  static LayoutConstraint getUnknownLayout();
+
   LayoutConstraintInfo *getPointer() const { return Ptr; }
 
   bool isNull() const { return Ptr == 0; }
 
   LayoutConstraintInfo *operator->() const { return Ptr; }
 
+  /// Merge these two constraints and return a more specific one
+  /// or fail if they're incompatible and return an unknown constraint.
+  LayoutConstraint merge(LayoutConstraint Other);
+
   explicit operator bool() const { return Ptr != 0; }
 
-  void dump() const;
+  SWIFT_DEBUG_DUMP;
   void dump(raw_ostream &os, unsigned indent = 0) const;
 
   void print(raw_ostream &OS, const PrintOptions &PO = PrintOptions()) const;
@@ -196,6 +292,10 @@ class LayoutConstraint {
 
   /// Return the layout constraint as a string, for use in diagnostics only.
   std::string getString(const PrintOptions &PO = PrintOptions()) const;
+
+  friend llvm::hash_code hash_value(const LayoutConstraint &layout) {
+    return hash_value(layout.getPointer());
+  }
 
   bool operator==(LayoutConstraint rhs) const {
     if (isNull() && rhs.isNull())
@@ -223,7 +323,7 @@ template <class X> inline X dyn_cast_or_null(LayoutConstraint LC) {
 }
 
 /// LayoutConstraintLoc - Provides source location information for a
-/// parsed layout constaint.
+/// parsed layout constraint.
 struct LayoutConstraintLoc {
 private:
   LayoutConstraint Layout;
@@ -250,6 +350,10 @@ public:
   bool hasLocation() const { return Loc.isValid(); }
   LayoutConstraint getLayoutConstraint() const { return Layout; }
 
+  void setLayoutConstraint(LayoutConstraint value) {
+    Layout = value;
+  }
+
   bool isNull() const { return Layout.isNull(); }
 
   LayoutConstraintLoc clone(ASTContext &ctx) const { return *this; }
@@ -258,7 +362,7 @@ public:
 /// Checks if ID is a name of a layout constraint and returns this
 /// constraint. If ID does not match any known layout constraint names,
 /// returns UnknownLayout.
-LayoutConstraintInfo getLayoutConstraintInfo(Identifier ID);
+LayoutConstraint getLayoutConstraint(Identifier ID, ASTContext &Ctx);
 
 } // end namespace swift
 
@@ -302,7 +406,7 @@ template <> struct DenseMapInfo<swift::LayoutConstraint> {
 };
 
 // A LayoutConstraint is "pointer like".
-template <> class PointerLikeTypeTraits<swift::LayoutConstraint> {
+template <> struct PointerLikeTypeTraits<swift::LayoutConstraint> {
 public:
   static inline void *getAsVoidPointer(swift::LayoutConstraint I) {
     return (void *)I.getPointer();

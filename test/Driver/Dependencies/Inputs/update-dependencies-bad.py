@@ -12,8 +12,8 @@
 # ----------------------------------------------------------------------------
 #
 # Fails if the input file is named "bad.swift" or "crash.swift"; otherwise
-# dispatches to update-dependencies.py. "crash.swift" gives an exit code
-# other than 1.
+# dispatches to update-dependencies.py. "crash.swift" results in an
+# exit-by-SIGKILL
 #
 # ----------------------------------------------------------------------------
 
@@ -21,9 +21,11 @@ from __future__ import print_function
 
 import os
 import shutil
+import signal
+import subprocess
 import sys
 
-assert sys.argv[1] == '-frontend'
+assert sys.argv[2] == '-frontend'
 
 primaryFile = sys.argv[sys.argv.index('-primary-file') + 1]
 
@@ -35,14 +37,22 @@ if (os.path.basename(primaryFile) == 'bad.swift' or
     try:
         depsFile = sys.argv[sys.argv.index(
             '-emit-reference-dependencies-path') + 1]
-        shutil.copyfile(primaryFile, depsFile)
+
+        returncode = subprocess.call([sys.argv[1], "--from-yaml",
+                                      "--input-filename=" + primaryFile,
+                                      "--output-filename=" + depsFile])
+        # If the input is not valid YAML, just copy it over verbatim;
+        # we're testing a case where we produced a corrupted output file.
+        if returncode != 0:
+            shutil.copyfile(primaryFile, depsFile)
     except ValueError:
         pass
 
     if os.path.basename(primaryFile) == 'bad.swift':
         sys.exit(1)
     else:
-        sys.exit(129)
+        sys.stdout.flush()
+        os.kill(os.getpid(), signal.SIGKILL)
 
 execDir = os.path.dirname(os.path.abspath(__file__))
-execfile(os.path.join(execDir, "update-dependencies.py"))
+exec(open(os.path.join(execDir, "update-dependencies.py")).read())

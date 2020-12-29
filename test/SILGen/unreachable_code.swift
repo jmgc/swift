@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -emit-sil %s -o /dev/null -verify
+// RUN: %target-swift-emit-sil %s -verify | %FileCheck %s
 
 func testUnreachableAfterReturn() -> Int {
   var x: Int = 3
@@ -67,7 +67,7 @@ func testUnreachableCase1(a : Tree) {
   case let Leaf:
     _ = Leaf
     return
-  case .Branch(_):  // expected-warning {{case will never be executed}}
+  case .Branch(_): // expected-warning {{case is already handled by previous patterns; consider removing it}}
     return
   }
 }
@@ -77,7 +77,7 @@ func testUnreachableCase2(a : Tree) {
   case let Leaf:
     _ = Leaf
     fallthrough
-  case .Branch(_):
+  case .Branch(_): // expected-warning {{case is already handled by previous patterns; consider removing it}}
     return
   }
 }
@@ -86,7 +86,7 @@ func testUnreachableCase3(a : Tree) {
   switch a {
   case _:
     break
-  case .Branch(_):  // expected-warning {{case will never be executed}}
+  case .Branch(_): // expected-warning {{case is already handled by previous patterns; consider removing it}}
     return
   }
 }
@@ -109,6 +109,15 @@ func testUnreachableCase5(a : Tree) {
   }
 }
 
+func testOptionalEvaluationBreak(a : Tree) {
+  class SR5763 { func foo() {} }
+  func createOptional() -> SR5763? { return SR5763() }
+  switch a {
+  case _:
+    break
+    createOptional()?.foo() // expected-warning {{code after 'break' will never be executed}}
+  }
+}
 
 func testUnreachableAfterThrow(e: Error) throws {
   throw e
@@ -118,5 +127,31 @@ func testUnreachableAfterThrow(e: Error) throws {
 class TestThrowInInit {
   required init(e: Error) throws {
     throw e  // no unreachable code diagnostic for the implicit return.
+  }
+}
+
+func sr6141() {
+  var bar: String? = ""
+  return;
+  bar?.append("x")  // expected-warning{{code after 'return' will never be executed}}
+}
+
+func testUnreachableCatchClause() {
+  enum ErrorEnum: Error { case someError }
+  do {
+    throw ErrorEnum.someError
+  } catch let error {
+    print(error)
+  } catch ErrorEnum.someError { // expected-warning {{case will never be executed}}
+    print("some error")
+  }
+}
+
+func sr13639() -> Int {
+  return Foo.bar
+  struct Foo { // no-warning
+    static var bar = 0
+    // CHECK: sil private @$s16unreachable_code7sr13639SiyF3FooL_V7fooFuncyyF : $@convention(method) (Foo) -> ()
+    func fooFunc() {}
   }
 }

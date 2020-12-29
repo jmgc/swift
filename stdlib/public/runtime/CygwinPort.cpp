@@ -14,7 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#if defined(_WIN32) || defined(__CYGWIN__)
+#if (defined(_WIN32) || defined(__CYGWIN__)) && !defined(_MSC_VER)
 #include "Private.h"
 #include "swift/Runtime/Debug.h"
 #include <stdint.h>
@@ -32,7 +32,6 @@ using namespace swift;
 
 static std::mutex swiftOnceMutex;
 
-#if !defined(_MSC_VER)
 void swift::_swift_once_f(uintptr_t *predicate, void *context,
                           void (*function)(void *)) {
   // FIXME: This implementation does a global lock, which is much worse than
@@ -47,5 +46,4 @@ void swift::_swift_once_f(uintptr_t *predicate, void *context,
   } else
     swiftOnceMutex.unlock();
 }
-#endif
-#endif
+#endif // (defined(_WIN32) || defined(__CYGWIN__)) && !defined(_MSC_VER)

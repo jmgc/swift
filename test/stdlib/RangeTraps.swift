@@ -9,14 +9,16 @@
 // See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 //
 //===----------------------------------------------------------------------===//
-// RUN: rm -rf %t
-// RUN: mkdir -p %t
-// RUN: %target-build-swift %s -o %t/a.out_Debug
+// RUN: %empty-directory(%t)
+// RUN: %target-build-swift %s -o %t/a.out_Debug -Onone
 // RUN: %target-build-swift %s -o %t/a.out_Release -O
 //
+// RUN: %target-codesign %t/a.out_Debug
+// RUN: %target-codesign %t/a.out_Release
 // RUN: %target-run %t/a.out_Debug
 // RUN: %target-run %t/a.out_Release
 // REQUIRES: executable_test
+
 
 import StdlibUnittest
 
@@ -58,6 +60,79 @@ RangeTraps.test("OutOfRange")
   // This works for Ranges now!
   expectTrue((0...Int.max).contains(Int.max))
 }
+
+RangeTraps.test("CountablePartialRangeFrom")
+  .skip(.custom(
+    { _isFastAssertConfiguration() },
+    reason: "this trap is not guaranteed to happen in -Ounchecked"))
+  .code {
+    
+    let range = (Int.max - 1)...
+    var it = range.makeIterator()
+    _ = it.next()
+    expectCrashLater()
+    _ = it.next()
+}
+
+RangeTraps.test("nanLowerBound")
+  .code {
+  expectCrashLater()
+  _ = Double.nan ... 0
+}
+
+RangeTraps.test("nanUpperBound")
+  .code {
+  expectCrashLater()
+  _ = 0 ... Double.nan
+}
+
+RangeTraps.test("nanLowerBoundPartial")
+  .code {
+  expectCrashLater()
+  _ = Double.nan ..< 0
+}
+
+RangeTraps.test("nanUpperBoundPartial")
+  .code {
+  expectCrashLater()
+  _ = 0 ..< Double.nan
+}
+
+RangeTraps.test("fromNaN")
+  .code {
+  expectCrashLater()
+  _ = Double.nan...
+}
+
+RangeTraps.test("toNaN")
+  .code {
+  expectCrashLater()
+  _ = ..<Double.nan
+}
+
+RangeTraps.test("throughNaN")
+  .code {
+  expectCrashLater()
+  _ = ...Double.nan
+}
+
+RangeTraps.test("UncheckedHalfOpen")
+  .xfail(.custom(
+    { !_isDebugAssertConfiguration() },
+    reason: "assertions are disabled in Release and Unchecked mode"))
+  .code {
+    expectCrashLater()
+    var range = Range(uncheckedBounds: (lower: 1, upper: 0))
+  }
+
+RangeTraps.test("UncheckedClosed")
+  .xfail(.custom(
+    { !_isDebugAssertConfiguration() },
+    reason: "assertions are disabled in Release and Unchecked mode"))
+  .code {
+    expectCrashLater()
+    var range = ClosedRange(uncheckedBounds: (lower: 1, upper: 0))
+  }
 
 runAllTests()
 

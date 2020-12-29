@@ -13,30 +13,38 @@
 #ifndef SWIFT_SIL_UNDEF_H
 #define SWIFT_SIL_UNDEF_H
 
+#include "swift/Basic/Compiler.h"
 #include "swift/SIL/SILValue.h"
 
 namespace swift {
-  class SILModule;
+
+class SILArgument;
+class SILInstruction;
+class SILModule;
 
 class SILUndef : public ValueBase {
-  void operator=(const SILArgument &) = delete;
+  SILUndef(SILType type);
 
-  // Work around MSVC error: attempting to reference a deleted function.
-#if !defined(_MSC_VER) || defined(__clang__)
-  void operator delete(void *Ptr, size_t) = delete;
-#endif
-
-  SILUndef(SILType Ty) : ValueBase(ValueKind::SILUndef, Ty) {}
 public:
+  void operator=(const SILArgument &) = delete;
+  void operator delete(void *, size_t) = delete;
 
-  static SILUndef *get(SILType Ty, SILModule *M);
-  static SILUndef *get(SILType Ty, SILModule &M) { return get(Ty, &M); }
+  static SILUndef *get(SILType ty, SILModule &m);
+  static SILUndef *get(SILType ty, const SILFunction &f);
 
-  template<class OwnerTy>
-  static SILUndef *getSentinelValue(SILType Ty, OwnerTy Owner) { return new (*Owner) SILUndef(Ty); }
+  template <class OwnerTy>
+  static SILUndef *getSentinelValue(SILType type, OwnerTy owner) {
+    // Ownership kind isn't used here, the value just needs to have a unique
+    // address.
+    return new (*owner) SILUndef(type);
+  }
 
-  static bool classof(const ValueBase *V) {
-    return V->getKind() == ValueKind::SILUndef;
+  ValueOwnershipKind getOwnershipKind() const { return OwnershipKind::None; }
+
+  static bool classof(const SILArgument *) = delete;
+  static bool classof(const SILInstruction *) = delete;
+  static bool classof(const SILNode *node) {
+    return node->getKind() == SILNodeKind::SILUndef;
   }
 };
 

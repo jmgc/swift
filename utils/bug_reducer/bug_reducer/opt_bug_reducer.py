@@ -1,9 +1,8 @@
+from __future__ import print_function
 
 import json
 import md5
 import subprocess
-
-import swift_tools
 
 import func_bug_reducer
 
@@ -12,11 +11,13 @@ from list_reducer import TESTRESULT_KEEPPREFIX
 from list_reducer import TESTRESULT_KEEPSUFFIX
 from list_reducer import TESTRESULT_NOFAILURE
 
+import swift_tools
+
 
 class ReduceMiscompilingPasses(list_reducer.ListReducer):
 
-    def __init__(self, l, invoker):
-        list_reducer.ListReducer.__init__(self, l)
+    def __init__(self, lst, invoker):
+        list_reducer.ListReducer.__init__(self, lst)
         self.invoker = invoker
 
     def run_test(self, prefix, suffix):
@@ -33,12 +34,15 @@ class ReduceMiscompilingPasses(list_reducer.ListReducer):
 
         # Found a miscompile! Keep the suffix
         if result['exit_code'] != 0:
-            print("Suffix maintains the predicate. Returning suffix")
+            print("Suffix crashes! Returning suffix")
             return (TESTRESULT_KEEPSUFFIX, prefix, suffix)
 
         if len(prefix) == 0:
-            print("Suffix passes and no prefix, returning nofailure")
+            print("Suffix passes and no prefix passes, returning nofailure")
             return (TESTRESULT_NOFAILURE, prefix, suffix)
+
+        print("Suffix '' does not crash! Current reduced program compiles "
+              "without optimization!")
 
         # Next see if the program is broken if we run the "prefix" passes
         # first, then separately run the "kept" passes.
@@ -57,7 +61,7 @@ class ReduceMiscompilingPasses(list_reducer.ListReducer):
             prefix,
             prefix_path)
         if result['exit_code'] != 0:
-            print("Prefix maintains the predicate by itself. Returning keep "
+            print("Prefix crashes the input by itself. Returning keep "
                   "prefix")
             return (TESTRESULT_KEEPPREFIX, prefix, suffix)
 
@@ -95,9 +99,11 @@ def pass_bug_reducer(tools, config, passes, sil_opt_invoker, reduce_sil):
     result = sil_opt_invoker.invoke_with_passlist(passes, filename)
     # If we succeed, there is no further work to do.
     if result['exit_code'] == 0:
-        print("Success with base case: %s" % (' '.join(passes)))
+        print("Does not crash on input passes!")
+        print("Base Case: {}. Passes: {}".format(filename, ' '.join(passes)))
         return True
-    print("Base case crashes! First trying to reduce the pass list!")
+    print("Crashes with initial pass list! First trying to reduce the pass "
+          "list!")
 
     # Otherwise, reduce the list of passes that cause the optimizer to crash.
     r = ReduceMiscompilingPasses(passes, sil_opt_invoker)
@@ -116,8 +122,8 @@ def pass_bug_reducer(tools, config, passes, sil_opt_invoker, reduce_sil):
     input_file = sil_opt_invoker.input_file
     nm = swift_tools.SILNMInvoker(config, tools)
     sil_extract_invoker = swift_tools.SILFuncExtractorInvoker(config,
-                                                                    tools,
-                                                                    input_file)
+                                                              tools,
+                                                              input_file)
 
     func_bug_reducer.function_bug_reducer(input_file, nm, sil_opt_invoker,
                                           sil_extract_invoker,
@@ -127,8 +133,8 @@ def pass_bug_reducer(tools, config, passes, sil_opt_invoker, reduce_sil):
 
 
 def invoke_pass_bug_reducer(args):
-    """Given a path to a sib file with canonical sil, attempt to find a perturbed
-list of passes that the perf pipeline"""
+    """Given a path to a sib file with canonical sil, attempt to find a
+       perturbed list of passes that the perf pipeline"""
     tools = swift_tools.SwiftTools(args.swift_build_dir)
     config = swift_tools.SILToolInvokerConfig(args)
 

@@ -62,13 +62,14 @@ public:
 };
 
 /// Begin a varargs emission sequence.
-VarargsInfo emitBeginVarargs(SILGenFunction &gen, SILLocation loc,
+VarargsInfo emitBeginVarargs(SILGenFunction &SGF, SILLocation loc,
                              CanType baseTy, CanType arrayTy,
                              unsigned numElements);
 
 /// Successfully end a varargs emission sequence.
-ManagedValue emitEndVarargs(SILGenFunction &gen, SILLocation loc,
-                            VarargsInfo &&varargs); 
+ManagedValue emitEndVarargs(SILGenFunction &SGF, SILLocation loc,
+                            VarargsInfo &&varargs,
+                             unsigned numElements); 
 
 } // end namespace Lowering
 } // end namespace swift

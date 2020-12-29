@@ -114,7 +114,7 @@ static void convertToUTF8(llvm::ArrayRef<wchar_t> wide,
   (void)res;
   out.set_size(utf8_begin - out.begin());
 }
-}
+} // end anonymous namespace
 
 /// An arbitrary, otherwise-unused char value that editline interprets as
 /// entering/leaving "literal mode", meaning it passes prompt characters through
@@ -353,9 +353,8 @@ private:
     PromptString.clear();
 
     if (ShowColors) {
-      const char *colorCode =
-        llvm::sys::Process::OutputColor(llvm::raw_ostream::YELLOW,
-                                        false, false);
+      const char *colorCode = llvm::sys::Process::OutputColor(
+          static_cast<char>(llvm::raw_ostream::YELLOW), false, false);
       if (colorCode)
         appendEscapeSequence(PromptString, colorCode);
     }
@@ -560,7 +559,7 @@ private:
   }
 
 };
-}
+} // end anonymous namespace
 
 static bool handleRequest(StringRef Req, std::string &Error);
 

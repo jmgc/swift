@@ -47,7 +47,7 @@ class ARCLoopOpts : public SILFunctionTransform {
       return;
 
     // Skip global init functions.
-    if (F->getName().startswith("globalinit_"))
+    if (F->isGlobalInitOnceFunction())
       return;
 
     auto *LA = getAnalysis<SILLoopAnalysis>();
@@ -83,8 +83,6 @@ class ARCLoopOpts : public SILFunctionTransform {
       invalidateAnalysis(SILAnalysis::InvalidationKind::CallsAndInstructions);
     }
   }
-
-  StringRef getName() override { return "ARC Loop Opts"; }
 };
 
 } // end anonymous namespace

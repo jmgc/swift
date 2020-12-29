@@ -22,51 +22,65 @@
 #include "swift/SIL/SILFunction.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/TypeSubstCloner.h"
-#include "swift/SILOptimizer/Utils/Local.h"
+#include "swift/SILOptimizer/Utils/BasicBlockOptUtils.h"
 #include "swift/SILOptimizer/Utils/Generics.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include <functional>
 
 namespace swift {
 
-class GenericCloner : public TypeSubstCloner<GenericCloner> {
-  IsFragile_t Fragile;
+class GenericCloner
+  : public TypeSubstCloner<GenericCloner, SILOptFunctionBuilder> {
+  using SuperTy = TypeSubstCloner<GenericCloner, SILOptFunctionBuilder>;
+
+  SILOptFunctionBuilder &FuncBuilder;
+  IsSerialized_t Serialized;
   const ReabstractionInfo &ReInfo;
   CloneCollector::CallbackType Callback;
+  llvm::SmallDenseMap<const SILDebugScope *, const SILDebugScope *, 8>
+      RemappedScopeCache;
+
+  llvm::SmallVector<AllocStackInst *, 8> AllocStacks;
+  AllocStackInst *ReturnValueAddr = nullptr;
 
 public:
   friend class SILCloner<GenericCloner>;
 
-  GenericCloner(SILFunction *F,
-                IsFragile_t Fragile,
-                const ReabstractionInfo &ReInfo,
-                ArrayRef<Substitution> ParamSubs,
-                StringRef NewName,
-                CloneCollector::CallbackType Callback)
-  : TypeSubstCloner(*initCloned(F, Fragile, ReInfo, NewName), *F,
-                    ParamSubs), ReInfo(ReInfo), Callback(Callback) {
+  GenericCloner(SILOptFunctionBuilder &FuncBuilder, SILFunction *F,
+                const ReabstractionInfo &ReInfo, SubstitutionMap ParamSubs,
+                StringRef NewName, CloneCollector::CallbackType Callback)
+      : SuperTy(*createDeclaration(FuncBuilder, F, ReInfo, NewName), *F,
+                ParamSubs),
+        FuncBuilder(FuncBuilder), ReInfo(ReInfo), Callback(Callback) {
     assert(F->getDebugScope()->Parent != getCloned()->getDebugScope()->Parent);
   }
   /// Clone and remap the types in \p F according to the substitution
   /// list in \p Subs. Parameters are re-abstracted (changed from indirect to
   /// direct) according to \p ReInfo.
   static SILFunction *
-  cloneFunction(SILFunction *F,
-                IsFragile_t Fragile,
+  cloneFunction(SILOptFunctionBuilder &FuncBuilder,
+                SILFunction *F,
                 const ReabstractionInfo &ReInfo,
-                ArrayRef<Substitution> ParamSubs,
+                SubstitutionMap ParamSubs,
                 StringRef NewName,
                 CloneCollector::CallbackType Callback =nullptr) {
     // Clone and specialize the function.
-    GenericCloner SC(F, Fragile, ReInfo, ParamSubs,
+    GenericCloner SC(FuncBuilder, F, ReInfo, ParamSubs,
                      NewName, Callback);
     SC.populateCloned();
-    SC.cleanUp(SC.getCloned());
     return SC.getCloned();
   }
 
+  void fixUp(SILFunction *calleeFunction);
+
+  static SILFunction *createDeclaration(SILOptFunctionBuilder &FuncBuilder,
+                                        SILFunction *Orig,
+                                        const ReabstractionInfo &ReInfo,
+                                        StringRef NewName);
+
 protected:
+  void visitTerminator(SILBasicBlock *BB);
+
   // FIXME: We intentionally call SILClonerWithScopes here to ensure
   //        the debug scopes are set correctly for cloned
   //        functions. TypeSubstCloner, SILClonerWithScopes, and
@@ -82,14 +96,13 @@ protected:
   }
 
 private:
-  static SILFunction *initCloned(SILFunction *Orig,
-                                 IsFragile_t Fragile,
-                                 const ReabstractionInfo &ReInfo,
-                                 StringRef NewName);
   /// Clone the body of the function into the empty function that was created
   /// by initCloned.
   void populateCloned();
   SILFunction *getCloned() { return &getBuilder().getFunction(); }
+
+  const SILDebugScope *remapScope(const SILDebugScope *DS);
+
 };
 
 } // end namespace swift

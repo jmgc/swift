@@ -71,6 +71,7 @@ def body_lines(body_text):
             body_text, re_flags)
     ]
 
+
 # Mapping from protocol to associated type / operator requirements
 body = {}
 
@@ -130,6 +131,7 @@ def parse_protocol(m):
                 return
             graph.setdefault(parent.strip(), set()).add(child)
 
+
 protocols_and_operators = interpolate(r'''
 \bprotocol \s+ (%(identifier)s) \s*
   (?::\s*([^{]+))?                   # refinements
@@ -184,8 +186,8 @@ for node in sorted(graph.keys()):
               else ''
 
     label = node if len(requirements + generics) == 0 else (
-        '\n<TABLE BORDER="0">\n<TR><TD>\n%s\n</TD></TR><HR/>' +
-        '\n%s%s%s</TABLE>\n' % (
+        ('\n<TABLE BORDER="0">\n<TR><TD>\n%s\n</TD></TR><HR/>' +
+            '\n%s%s%s</TABLE>\n') % (
             node,
             '\n'.join('<TR><TD>%s</TD></TR>' % r for r in requirements),
             divider,

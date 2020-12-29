@@ -67,7 +67,7 @@ private:
   ImmutablePointerSetFactory<SILInstruction> SetFactory;
 
   /// Stashed BB information.
-  ARCBBStateInfo *BBStateInfo;
+  std::unique_ptr<ARCBBStateInfo> BBStateInfo;
 
 public:
   ARCSequenceDataflowEvaluator(
@@ -108,6 +108,8 @@ private:
 
   llvm::Optional<ARCBBStateInfoHandle> getBottomUpBBState(SILBasicBlock *BB);
   llvm::Optional<ARCBBStateInfoHandle> getTopDownBBState(SILBasicBlock *BB);
+
+  void dumpDataflowResults();
 };
 
 } // end swift namespace

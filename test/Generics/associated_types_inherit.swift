@@ -1,10 +1,10 @@
 // RUN: %target-typecheck-verify-swift
 
-class C { 
+class C {
   func f() {}
 }
 
-class D : C { 
+class D : C {
 }
 
 class E { }
@@ -19,7 +19,7 @@ struct X1 : P {
 }
 
 struct X2 : P { // expected-error{{type 'X2' does not conform to protocol 'P'}}
-  func getAssoc() -> E { return E() } // expected-note{{inferred type 'E' (by matching requirement 'getAssoc()') is invalid: does not inherit from 'C'}}
+  func getAssoc() -> E { return E() } // expected-note{{candidate would match and infer 'Assoc' = 'E' if 'E' inherited from 'C'}}
 }
 
 func testP<T:P>(_ t: T) {
@@ -30,3 +30,11 @@ func testP<T:P>(_ t: T) {
 func callTestP(_ x1: X1) {
   testP(x1)
 }
+
+// SR-10251: unable to infer associated type in child protocol
+protocol P2 { associatedtype T }
+
+protocol P3: P2 where T == Self {}
+
+enum C3: P3 {} // correct, might be an error
+

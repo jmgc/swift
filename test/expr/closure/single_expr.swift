@@ -23,7 +23,7 @@ func testMap(_ array: [Int]) {
 // Nested single-expression closures -- <rdar://problem/20931915>
 class NestedSingleExpr {
   private var b: Bool = false
-  private func callClosure(_ callback: (Void) -> Void) {}
+  private func callClosure(_ callback: () -> Void) {}
 
   func call() {
     callClosure { [weak self] in
@@ -99,3 +99,25 @@ func haltAndCatchFire() -> Never { while true { } }
 let backupPlan: () -> Int = { haltAndCatchFire() }
 func missionCritical(storage: () -> String) {}
 missionCritical(storage: { haltAndCatchFire() })
+
+// <https://bugs.swift.org/browse/SR-4963>
+enum E { }
+func takesAnotherUninhabitedType(e: () -> E) {}
+takesAnotherUninhabitedType { haltAndCatchFire() }
+
+// Weak capture bug caught by rdar://problem/67351438
+class Y {
+  var toggle: Bool = false
+
+  func doSomething(animated: Bool, completionHandler: (Int, Int) -> Void) { }
+}
+
+class X {
+  private(set) var someY: Y!
+
+  func doSomething() {
+    someY?.doSomething(animated: true, completionHandler: { [weak someY] _, _ in
+        someY?.toggle = true
+      })
+  }
+}

@@ -15,11 +15,11 @@
 
 #include "swift/Basic/LLVM.h"
 #include "clang/Index/IndexSymbol.h"
-#include "llvm/ADT/SmallString.h"
 
 namespace swift {
 class Decl;
 class ValueDecl;
+class ModuleEntity;
 enum class AccessorKind;
 
 namespace index {
@@ -45,7 +45,7 @@ inline SymbolPropertySet &operator|=(SymbolPropertySet &SKSet, SymbolProperty SK
 }
 
 struct IndexRelation {
-  const ValueDecl *decl;
+  const Decl *decl;
   SymbolInfo symInfo;
   SymbolRoleSet roles = SymbolRoleSet(0);
 
@@ -55,7 +55,7 @@ struct IndexRelation {
   StringRef USR; // USR may be safely compared by pointer.
   StringRef group;
 
-  IndexRelation(SymbolRoleSet Roles, const ValueDecl *Sym, SymbolInfo SymInfo, StringRef Name, StringRef USR)
+  IndexRelation(SymbolRoleSet Roles, const Decl *Sym, SymbolInfo SymInfo, StringRef Name, StringRef USR)
   : decl(Sym), symInfo(SymInfo), roles(Roles), name(Name), USR(USR) {}
 
   IndexRelation() = default;
@@ -65,11 +65,12 @@ struct IndexSymbol : IndexRelation {
   SmallVector<IndexRelation, 3> Relations;
   unsigned line = 0;
   unsigned column = 0;
+  Optional<unsigned> offset;
 
   IndexSymbol() = default;
 
   StringRef getReceiverUSR() const {
-    for(auto Relation: Relations) {
+    for (auto Relation: Relations) {
       if (Relation.roles & (SymbolRoleSet) SymbolRole::RelationReceivedBy)
         return Relation.USR;
     }
@@ -77,8 +78,10 @@ struct IndexSymbol : IndexRelation {
   }
 };
 
+SymbolInfo getSymbolInfoForModule(ModuleEntity Mod);
 SymbolInfo getSymbolInfoForDecl(const Decl *D);
 SymbolSubKind getSubKindForAccessor(AccessorKind AK);
+bool isLocalSymbol(const Decl *D);
 
 using clang::index::printSymbolProperties;
 

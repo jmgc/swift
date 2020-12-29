@@ -53,7 +53,7 @@ public:
     }
     llvm_unreachable("Not reachable, all cases handled");
   }
-  
+
   ExprRetTy visit(Expr *E, Args... AA) {
     switch (E->getKind()) {
 
@@ -125,10 +125,6 @@ public:
 #include "swift/AST/TypeReprNodes.def"
     }
     llvm_unreachable("Not reachable, all cases handled");
-  }
-
-  TypeReprRetTy visitTypeRepr(TypeRepr *T, Args... AA) {
-    return TypeReprRetTy();
   }
 
 #define TYPEREPR(CLASS, PARENT) \
